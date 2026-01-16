@@ -468,7 +468,7 @@ static void MX_I2C2_Init(void)
     }
 }
 
-static void MX_GPIO_Init(void)
+static void MX_GPIO_Init(void) // Konfiguracja wszystkich pinów GPIO
 {
     GPIO_InitTypeDef GPIO_InitStruct;
 
