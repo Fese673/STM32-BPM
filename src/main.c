@@ -32,6 +32,7 @@
 #include "KY040.h"       // Enkoder obrotowy KY-040  (CLK=PA6, DT=PA4)
 #include <stdio.h>       // Standardowe funkcje C (printf, sprintf itd.)                   
                          // (często używane z UART-em oraz do formatowania tekstu)
+#include "uart1.h"  
 
 /* USER CODE END Includes */
 
@@ -73,40 +74,13 @@ static void MX_USART2_UART_Init(void);
 
 
 /* USER CODE BEGIN 0 */
-
-// UART1 – wysyłanie BPM + echo debug
-static uint8_t rxBuffer[100];
-static uint8_t rxIndex = 0;
-
-// Nowe: wysyła BPM + SPO2
-void uart1_send_vitals(uint8_t bpm, uint8_t spo2) {
-    static char tx_buf[32];
-    int len = snprintf(tx_buf, sizeof(tx_buf), "BPM:%d,SPO2:%d\r\n", bpm, spo2);
-    HAL_UART_Transmit(&huart1, (uint8_t *)tx_buf, (uint16_t)len, 100);
-}
-
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART1)
-    {
-        uint8_t receivedByte = rxBuffer[rxIndex];
-
-        // Echo na UART1
-        HAL_UART_Transmit(&huart1, &receivedByte, 1, 100);
-
-        if (receivedByte == '\n') {
-            rxIndex = 0;
-        } else {
-            rxIndex++;
-            if (rxIndex >= sizeof(rxBuffer)) rxIndex = 0;
-        }
-
-        // Ponów odbiór następnego bajtu
-        HAL_UART_Receive_IT(&huart1, &rxBuffer[rxIndex], 1);
-    }
-}
-
+// Wszystkie funkcje UART1 zostały przeniesione do pliku uart1.c.
+// Kod został przepisany na DMA, ponieważ przy użyciu zwykłego delay()
+// CPU czekało na zakończenie transmisji nawet ~100 ms.
+// Gdy nie był podłączony CH340, oczekiwanie trwało w nieskończoność,
+// co powodowało zawieszenie programu.
+// Objawiało się to charakterystycznym „piknięciem” i blokadą 
+// Wysłanie BPM i SPO2 odbywa sie w prostej formie tekstowej przykład [BPM:64,SPO2:97] Odbiorem i interpretacja danych bedzie zajmował sie esp32
 /* USER CODE END 0 */
 
 
@@ -140,8 +114,8 @@ int main(void)
     // Enkoder: CLK=PA6, DT=PA4
     KY040_Init(&encoder, GPIOA, GPIO_PIN_6, GPIOA, GPIO_PIN_4);
 
-    // UART1 – start odbioru w trybie przerwań (1 bajt)
-    HAL_UART_Receive_IT(&huart1, &rxBuffer[0], 1);
+    // UART1 – inicjalizacja 
+    uart1_init();
 
     // Buzzer: start PWM na TIM3_CH3 (PB0)
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
