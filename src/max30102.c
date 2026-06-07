@@ -43,30 +43,30 @@ void max30102_init(void)
                          I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
     } while (data & 0x40);
 
-    /* 新数据中断 */
+    /* New Data Interrupt */
     data = 0x40;
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_INTERRUPT_ENABLE_1,
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-    // /* 温度转换完中断 */
+
+    // /* Temperature conversion complete interrupt */
     // data = 0x02;
     // HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_INTERRUPT_ENABLE_2,
     //                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-    // /*25个采样未读中断*/
+    // /*25 unread interrupts*/
     // data = 0x7;
-    // /* 快满中断*/
+    // Full Buffer Interrupt
     // data = 0x80;
     // HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_INTERRUPT_ENABLE_1,
     //                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
     // HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_FIFO_CONFIGURATION,
     //                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-
-    /* 16384量程 50Hz 18位adc分辨率 */
+    /* 16384-range 50Hz 18-bit ADC resolution */
     data = 0x63;
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_SPO2_CONFIGURATION,
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
 
-    /* 灯的亮度 */
-    data = 0x47;
+    /* Light brightness */
+    data = 0x47;   // 27mA bezpieczne i optymalne 
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_LED_PLUSE_AMPLITUDE_1,
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_LED_PLUSE_AMPLITUDE_2,
@@ -87,7 +87,7 @@ void max30102_init(void)
     /* interrupt status clear */
     max30102_getStatus();
 
-    // /*转换温度*/
+    // /*Convert temperature*/
     // data = 1;
     // HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_DIE_TEMPERATURE_CONFIG,
     //                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
@@ -151,7 +151,7 @@ uint8_t max30102_getStatus(void)
     return data | dataTemp;
 }
 
-/* 用这个要读状态确定是否转换完
+/* Use this to read the status and determine whether the conversion is complete.
 float max30102_getTemperature(void)
 {
     int8_t dataTemp = 0;
@@ -165,7 +165,7 @@ float max30102_getTemperature(void)
                      I2C_MEMADD_SIZE_8BIT, (uint8_t *)(&dataTemp), 1, 10);
     data += dataTemp * 0.0625f;
 
-    // 启动下一次转换
+    // Initiate the next conversion
     dataTemp = 1;
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_DIE_TEMPERATURE_CONFIG,
                       I2C_MEMADD_SIZE_8BIT, (uint8_t *)(&dataTemp), 1, 10);
@@ -196,7 +196,7 @@ void max30102_ON(void)
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
 }
 
-/****************************** 计算 ******************************/
+
 
 #define BUFF_SIZE 50
 SAMPLE sampleBuff[BUFF_SIZE];
@@ -209,8 +209,7 @@ uint32_t redDC  = 0;
 uint16_t iRedAC = 0;
 uint32_t iRedDC = 0;
 
-#define FILTER_LEVEL 8 /* 滤波等级 */
-
+#define FILTER_LEVEL 8 /* Filter Level */
 void filter(SAMPLE *s)
 {
     uint8_t  i;
@@ -264,7 +263,7 @@ void calAcDc(uint16_t *rac, uint32_t *rdc,
     *idc = (iMax + iMin) / 2;
 }
 
-int16_t eachSampleDiff = 0; // 和上一个样本相差了多少
+int16_t eachSampleDiff = 0; // How different is it from the previous sample?
 
 void max30102_cal(void)
 {
@@ -274,13 +273,13 @@ void max30102_cal(void)
 
     max30102_getFIFO(sampleBuffTemp, unreadSampleCount);
 
-    static uint8_t  eachBeatSampleCount      = 0;   // 这次心跳历经了多少个样本
-    static uint8_t  lastTenBeatSampleCount[10];     // 过去十次心跳每一次的样本数
-    static uint32_t last_iRed                = 0;   // 上一次红外的值，过滤后的
+    static uint8_t  eachBeatSampleCount      = 0;   // How many samples did this heartbeat endure?
+    static uint8_t  lastTenBeatSampleCount[10];     // Number of samples for each of the past ten heartbeats
+    static uint32_t last_iRed                = 0;   // The previous infrared value, filtered
 
     for (i = 0; i < unreadSampleCount; i++)
     {
-        if (sampleBuffTemp[i].iRed < 40000) // 无手指不计算，跳过
+        if (sampleBuffTemp[i].iRed < 40000) // No fingers, no counting; skip it.
         {
             heartRate      = 0;
             spo2           = 0;
@@ -292,7 +291,7 @@ void max30102_cal(void)
         calAcDc(&redAC, &redDC, &iRedAC, &iRedDC);
         filter(&sampleBuffTemp[i]);
 
-        // 计算 spo2
+        // Calculation spo2
         float R = (((float)redAC  / (float)redDC) /
                    ((float)iRedAC / (float)iRedDC));
 
@@ -301,7 +300,7 @@ void max30102_cal(void)
         else if (R >= 0.66f && R < 1.0f)
             spo2 = (uint8_t)(129.64f - 54.0f * R);
 
-        // 计算心率, 30–250 ppm, count: 200–12
+        // Calculate heart rate, 30–250 ppm, count: 200–12
         eachSampleDiff = (int16_t)(last_iRed - sampleBuffTemp[i].iRed);
 
         if (eachSampleDiff > 50 && eachBeatSampleCount > 12)

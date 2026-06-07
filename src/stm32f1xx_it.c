@@ -42,7 +42,6 @@
 /* External variables --------------------------------------------------------*/
 extern I2C_HandleTypeDef hi2c1;
 extern UART_HandleTypeDef huart1;
-extern UART_HandleTypeDef huart2;
 
 
 /******************************************************************************/
@@ -290,7 +289,8 @@ void USART1_IRQHandler(void)
 
 void USART2_IRQHandler(void)
 {
-    HAL_UART_IRQHandler(&huart2);
+    // USART2 nieużywany — PA2/PA3 brak połączenia
+    // IRQ nie jest włączone w NVIC, handler dla bezpieczeństwa pusty
 }
 
 

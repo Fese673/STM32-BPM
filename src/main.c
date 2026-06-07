@@ -33,6 +33,7 @@
 #include <stdio.h>       // Standardowe funkcje C (printf, sprintf itd.)                   
                          // (często używane z UART-em oraz do formatowania tekstu)
 #include "uart1.h"  
+#include "debug/debug.h"
 
 /* USER CODE END Includes */
 
@@ -42,8 +43,7 @@
 I2C_HandleTypeDef  hi2c1;    // I2C1 dla OLED
 I2C_HandleTypeDef  hi2c2;    // I2C2 dla MAX30102
 TIM_HandleTypeDef  htim3;    // TIM3: PWM 2kHz dla buzzera na PB0 (CH3)
-UART_HandleTypeDef huart1;   // UART1 PA9/PA10 (debug PC)
-UART_HandleTypeDef huart2;   // UART2 PA2/PA3 (link ESP32)
+UART_HandleTypeDef huart1;   // UART1 PA9/PA10 → ZEGAR ESP32 (PPG stream)
 
 /* USER CODE BEGIN PV */
 // === ENKODER KY-040 ===
@@ -70,17 +70,14 @@ static void MX_I2C2_Init(void);
 static void MX_NVIC_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
-static void MX_USART2_UART_Init(void);
 
 
 /* USER CODE BEGIN 0 */
-// Wszystkie funkcje UART1 zostały przeniesione do pliku uart1.c.
-// Kod został przepisany na DMA, ponieważ przy użyciu zwykłego delay()
-// CPU czekało na zakończenie transmisji nawet ~100 ms.
-// Gdy nie był podłączony CH340, oczekiwanie trwało w nieskończoność,
-// co powodowało zawieszenie programu.
-// Objawiało się to charakterystycznym „piknięciem” i blokadą 
-// Wysłanie BPM i SPO2 odbywa sie w prostej formie tekstowej przykład [BPM:64,SPO2:97] Odbiorem i interpretacja danych bedzie zajmował sie esp32
+// USART1 (PA9/PA10): interrupt-driven TX, PPG binary stream → ZEGAR ESP32 GPIO16
+//   - 50Hz: 0xAA + int16_t diff + 0x0A (4B)
+//   - 1Hz:  "BPM:64,SPO2:97\r\n" (przy pulsie)
+// USART2 (PA2/PA3): nieużywany, brak połączenia, wyłączony.
+// CH340 niepodłączony — PA9 idzie bezpośrednio do ZEGAR GPIO16.
 /* USER CODE END 0 */
 
 
@@ -100,12 +97,21 @@ int main(void)
     MX_I2C2_Init();
     MX_TIM3_Init();
     MX_USART1_UART_Init();
-    MX_USART2_UART_Init();
+    // USART2 (PA2/PA3) — nieużywany, brak połączenia fizycznego
+    // MX_USART2_UART_Init();
     MX_NVIC_Init();
 
     /* USER CODE BEGIN 2 */
 
     HAL_Delay(200); // stabilizacja zasilania
+
+    // UART1 — PPG stream do ZEGAR ESP32 (PA9→GPIO16), TX-only
+    uart1_init();
+    Debug_Init();
+    DEBUG_LOG_SECTION("DEBUG");
+    DEBUG_LOG_LINE("[BOOT] UART1 PPG stream ready (PA9 → ZEGAR GPIO16)");
+    DEBUG_LOG_LINE("[BOOT] I2C startup scan armed for +5000 ms");
+    Debug_QuickI2CProbe();
 
     // Inicjalizacja peryferiów użytkownika
     OLED_Init();       // ekran
@@ -113,9 +119,6 @@ int main(void)
 
     // Enkoder: CLK=PA6, DT=PA4
     KY040_Init(&encoder, GPIOA, GPIO_PIN_6, GPIOA, GPIO_PIN_4);
-
-    // UART1 – inicjalizacja 
-    uart1_init();
 
     // Buzzer: start PWM na TIM3_CH3 (PB0)
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
@@ -179,6 +182,9 @@ int main(void)
             }
         }
 
+        // Periodic debug hook: startup I2C scan after 5 seconds from power-up.
+        Debug_Process();
+
         /* ========== BLOK 3: MAX30102 - POMIAR TĘTNA ========== */
         if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_12) == GPIO_PIN_RESET)
         {
@@ -188,8 +194,6 @@ int main(void)
             uint8_t spo2      = max30102_getSpO2();
             uint8_t heartReat = max30102_getHeartRate();
             int16_t diff      = max30102_getDiff();
-
-            
 
             // Wyświetlanie tylko na stronie 0
             if (current_page == 0)
@@ -243,6 +247,9 @@ int main(void)
 
                 last_diff_state = 0;  //  RESET FLAGI - gotowy na następny pik
             }
+
+            // PPG binary stream — po OLED i buzzrze, minimalny wpływ na timing I2C
+            uart1_send_ppg_diff(diff);
         }
     }
 }
@@ -295,9 +302,7 @@ static void MX_NVIC_Init(void)
     HAL_NVIC_SetPriority(USART1_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(USART1_IRQn);
 
-    // UART2 – ESP32
-    HAL_NVIC_SetPriority(USART2_IRQn, 2, 0);
-    HAL_NVIC_EnableIRQ(USART2_IRQn);
+    // UART2 – nieużywany
 
     // EXTI4 (PA4 - enkoder DT)
     HAL_NVIC_SetPriority(EXTI4_IRQn, 3, 0);
@@ -380,26 +385,6 @@ static void MX_USART1_UART_Init(void)
     huart1.Init.OverSampling = UART_OVERSAMPLING_16;
 
     if (HAL_UART_Init(&huart1) != HAL_OK)
-    {
-        _Error_Handler(__FILE__, __LINE__);
-    }
-}
-
-static void MX_USART2_UART_Init(void)
-{
-    __HAL_RCC_USART2_CLK_ENABLE();
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-
-    huart2.Instance        = USART2;
-    huart2.Init.BaudRate   = 115200;
-    huart2.Init.WordLength = UART_WORDLENGTH_8B;
-    huart2.Init.StopBits   = UART_STOPBITS_1;
-    huart2.Init.Parity     = UART_PARITY_NONE;
-    huart2.Init.Mode       = UART_MODE_TX_RX;
-    huart2.Init.HwFlowCtl  = UART_HWCONTROL_NONE;
-    huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-
-    if (HAL_UART_Init(&huart2) != HAL_OK)
     {
         _Error_Handler(__FILE__, __LINE__);
     }
@@ -497,21 +482,12 @@ static void MX_GPIO_Init(void) // Konfiguracja wszystkich pinów GPIO
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    // PA10 pull-up: RX od ZEGAR GPIO17. Bez pull-up floating → szumy → overrun.
     GPIO_InitStruct.Pin  = GPIO_PIN_10;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* USART2: PA2 (TX), PA3 (RX) */
-    GPIO_InitStruct.Pin   = GPIO_PIN_2;
-    GPIO_InitStruct.Mode  = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin  = GPIO_PIN_3;
-    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 }
 
 /**

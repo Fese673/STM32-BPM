@@ -14,9 +14,9 @@
             "name": "PIO Debug",
             "executable": "c:/PROJEKTY/STM32-BPM/.pio/build/bluepill_f103c8/firmware.elf",
             "projectEnvName": "bluepill_f103c8",
-            "toolchainBinDir": "C:/Users/PC/.platformio/packages/toolchain-gccarmnoneeabi/bin",
+            "toolchainBinDir": "C:/PROJEKTY/pio-home/packages/toolchain-gccarmnoneeabi/bin",
             "internalConsoleOptions": "openOnSessionStart",
-            "svdPath": "C:/Users/PC/.platformio/platforms/ststm32/misc/svd/STM32F103xx.svd",
+            "svdPath": "C:/PROJEKTY/pio-home/platforms/ststm32/misc/svd/STM32F103xx.svd",
             "preLaunchTask": {
                 "type": "PlatformIO",
                 "task": "Pre-Debug"
@@ -28,9 +28,9 @@
             "name": "PIO Debug (skip Pre-Debug)",
             "executable": "c:/PROJEKTY/STM32-BPM/.pio/build/bluepill_f103c8/firmware.elf",
             "projectEnvName": "bluepill_f103c8",
-            "toolchainBinDir": "C:/Users/PC/.platformio/packages/toolchain-gccarmnoneeabi/bin",
+            "toolchainBinDir": "C:/PROJEKTY/pio-home/packages/toolchain-gccarmnoneeabi/bin",
             "internalConsoleOptions": "openOnSessionStart",
-            "svdPath": "C:/Users/PC/.platformio/platforms/ststm32/misc/svd/STM32F103xx.svd"
+            "svdPath": "C:/PROJEKTY/pio-home/platforms/ststm32/misc/svd/STM32F103xx.svd"
         },
         {
             "type": "platformio-debug",
@@ -38,9 +38,9 @@
             "name": "PIO Debug (without uploading)",
             "executable": "c:/PROJEKTY/STM32-BPM/.pio/build/bluepill_f103c8/firmware.elf",
             "projectEnvName": "bluepill_f103c8",
-            "toolchainBinDir": "C:/Users/PC/.platformio/packages/toolchain-gccarmnoneeabi/bin",
+            "toolchainBinDir": "C:/PROJEKTY/pio-home/packages/toolchain-gccarmnoneeabi/bin",
             "internalConsoleOptions": "openOnSessionStart",
-            "svdPath": "C:/Users/PC/.platformio/platforms/ststm32/misc/svd/STM32F103xx.svd",
+            "svdPath": "C:/PROJEKTY/pio-home/platforms/ststm32/misc/svd/STM32F103xx.svd",
             "loadMode": "manual"
         }
     ]
