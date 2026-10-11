@@ -112,6 +112,7 @@ static void tx_status(void)
     pl[0] = stepper_motion_busy(&s_motion) ? 1U : 0U;
     wr_i32le(&pl[1], stepper_motion_pos(&s_motion));
     pl[5] = truth_calibrated() ? STEPPER_REF_FLAG_CAL_OK : 0U;
+    if (truth_radar_en()) pl[5] |= STEPPER_REF_FLAG_RADAR_EN;
     if (frame_tx_send(STEPPER_FRAME_STATUS, pl, sizeof(pl))) {
         ++g_stepper_tx_status;
     }
@@ -124,6 +125,7 @@ static void tx_ref(void)
     wr_i32le(&pl[0], truth_zero());
     wr_i32le(&pl[4], truth_span());
     pl[8] = truth_calibrated() ? STEPPER_REF_FLAG_CAL_OK : 0U;
+    if (truth_radar_en()) pl[8] |= STEPPER_REF_FLAG_RADAR_EN;
     const uint16_t hd = truth_home_deg();
     pl[9] = (uint8_t)(hd & 0xFFU);
     pl[10] = (uint8_t)((hd >> 8) & 0xFFU);
@@ -255,6 +257,16 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
         }
         q.cmd  = cmd;
         q.arg1 = (int32_t)rd_u16le(&payload[1]);  /* cel powrotu 0..360 */
+        break;
+
+    case STEPPER_CMD_SET_RADAR:
+        if (len != 2U) {   /* cmd(1) + en(1) */
+            ++g_stepper_rx_bad;
+            (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
+            return;
+        }
+        q.cmd  = cmd;
+        q.arg1 = (int32_t)payload[1];  /* 0 = OFF, !=0 = ON */
         break;
 
     default:
@@ -414,6 +426,15 @@ void stepper_poll(void)
             if (hd > 360U) hd = 360U;
             truth_set_home(hd, stepper_motion_pos(&s_motion),
                            stepper_motion_busy(&s_motion));
+            tx_ref();
+            break;
+        }
+        case STEPPER_CMD_SET_RADAR: {
+            /* Automat LD2410C z przycisku na Guitionie.
+             * Bezwarunkowo (preferencja, nie ruch); persist + oglos REF. */
+            truth_set_radar_en((uint8_t)(q.arg1 != 0L),
+                               stepper_motion_pos(&s_motion),
+                               stepper_motion_busy(&s_motion));
             tx_ref();
             break;
         }

@@ -39,7 +39,10 @@ typedef struct {
     int32_t  pos;
     int32_t  span;
     uint16_t home_speed;
-    uint16_t home_accel;
+    /* Flagi bitowe (wczesniej home_accel — stale TRUTH_HOME_ACCEL, nigdy
+     * nieczytane; ten sam layout u16, stare sloty maja tu 1000 = bit0 0).
+     * bit0 = radar_en (automat LD2410C wlaczony). */
+    uint16_t flags;
     uint16_t home_deg;   /* cel powrotu po resecie 0..360 (wczesniej rsvd) */
     uint16_t crc;
 } truth_slot_t;
@@ -49,6 +52,7 @@ static int32_t  s_span = 0L;
 static uint8_t  s_cal_ok = 0U;
 static uint16_t s_home_speed = TRUTH_SPEED_DEF; /* nadpisuje flash w init */
 static uint16_t s_home_deg = 0U; /* cel powrotu po resecie (nadpisuje flash) */
+static uint8_t s_radar_en = 0U; /* automat LD2410C (nadpisuje flash) */
 static int32_t  s_last_saved_pos = 0L;
 static uint8_t  s_have_saved_base = 0U;
 
@@ -158,7 +162,7 @@ static uint8_t truth_save_now(int32_t pos)
     s.pos         = pos;
     s.span        = s_span;
     s.home_speed  = s_home_speed;
-    s.home_accel  = TRUTH_HOME_ACCEL;
+    s.flags       = s_radar_en ? TRUTH_FLAG_RADAR_EN : 0U;
     s.home_deg    = s_home_deg;
     s.crc         = slot_crc(&s);
 
@@ -205,6 +209,8 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
         if (hd == 0xFFFFU) hd = 0U; /* erase-widmo (0xFFFF > 360 i tak by padlo) */
         if (hd > 360U) hd = 0U;
         s_home_deg = hd;
+        /* Automat radaru (stare sloty maja w flags 1000 = bit0 0 = OFF). */
+        s_radar_en = (uint8_t)((best->flags & TRUTH_FLAG_RADAR_EN) != 0U);
         s_last_saved_pos = best->pos;
         s_have_saved_base = 1U;
         if (pos_out != NULL)    *pos_out = best->pos;
@@ -219,6 +225,7 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
         s_seq = 0U;
         s_span = 0L;
         s_cal_ok = 0U;
+        s_radar_en = 0U;
         s_have_saved_base = 0U;
         s_home_needed = 0U;
         if (pos_out != NULL)    *pos_out = 0L;
@@ -333,6 +340,26 @@ void truth_set_speed(uint16_t speed, int32_t cur_pos, uint8_t busy)
     if (busy) {
         /* W ruchu: nie stallujemy erase'em — uzbrajamy zapis na postoj
          * (tick dopisze 2 s po krawedzi; pozycje i tak odswieza). */
+        s_save_armed = 1U;
+        s_save_pos = cur_pos;
+        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
+        return;
+    }
+    if (s_have_saved_base) {
+        truth_save_now(s_last_saved_pos);
+    } else {
+        truth_save_now(0L);
+    }
+}
+
+uint8_t truth_radar_en(void) { return s_radar_en; }
+
+void truth_set_radar_en(uint8_t en, int32_t cur_pos, uint8_t busy)
+{
+    en = (uint8_t)(en != 0U);
+    if (en == s_radar_en) return; /* bez zmian — nie zuzywamy flash */
+    s_radar_en = en;
+    if (busy) {
         s_save_armed = 1U;
         s_save_pos = cur_pos;
         s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);

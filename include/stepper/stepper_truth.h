@@ -38,6 +38,10 @@ extern "C" {
 
 /* Flaga w ramce 0xB2/0xB4: rama skalibrowana. */
 #define STEPPER_REF_FLAG_CAL_OK 0x01U
+/* Flaga w ramce 0xB2/0xB4: automat LD2410C wlaczony. */
+#define STEPPER_REF_FLAG_RADAR_EN 0x02U
+/* Bit wewnetrznego pola flags slotu flash. */
+#define TRUTH_FLAG_RADAR_EN 0x01U
 
 /* Odtworzenie z flash. Wywolac raz w stepper_init() PRZED startem
  * petli. Zwraca przez wskazniki: pos (do wstawienia w licznik),
@@ -94,6 +98,12 @@ uint16_t truth_home_deg(void);
 void truth_set_home(uint16_t deg, int32_t cur_pos, uint8_t busy);
 /* Kroki celu powrotu: skalibrowany ? zero+home*span/90 : 0. */
 int32_t truth_home_steps(void);
+
+/* Automat LD2410C (flaga z przycisku na Guitionie, persist we flash
+ * w polu flags slotu — ten sam layout, stare sloty czytaja sie jako OFF).
+ * Zapis jak SET_SPEED: od razu na postoju, odroczony w ruchu. */
+uint8_t truth_radar_en(void);
+void truth_set_radar_en(uint8_t en, int32_t cur_pos, uint8_t busy);
 
 /* Diagnostyka BEZ UART (podglad w debuggerze). */
 extern volatile uint32_t g_truth_saves;

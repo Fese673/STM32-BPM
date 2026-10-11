@@ -82,6 +82,7 @@ extern "C" {
 #define STEPPER_CMD_MOVE_DEG  0x08U
 #define STEPPER_CMD_SET_SPEED 0x09U
 #define STEPPER_CMD_SET_HOME  0x0AU
+#define STEPPER_CMD_SET_RADAR 0x0BU   /* cmd(1) + en(1): automat LD2410C */
 
 /* Rejestruje handler 0xB1 + zeruje ring. Wywolac raz w main()
  * PO frame_protocol_init(). Nie tyka UART ani innych handlerow. */
