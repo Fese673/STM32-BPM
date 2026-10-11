@@ -60,7 +60,10 @@ public:
 private:
     ld2410_uart_t uart_;
 
-    uint32_t radar_uart_timeout = 100;
+    /* Swiezosc ramki dla isConnected(): 1000 ms (nie 100 jak w Arduino —
+     * radar wypycha ramki rzadziej, a heartbeat 1 s i tak probkuje
+     * stan co sekunde; martwe lacze lapie zombie po 5 s). */
+    uint32_t radar_uart_timeout = 1000;
     uint32_t radar_uart_last_packet_ = 0;
     uint32_t radar_uart_command_timeout_ = 100;
 
