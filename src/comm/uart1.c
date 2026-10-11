@@ -14,8 +14,8 @@
  * ******************************************************************************
  */
 
-#include "uart1.h"
-#include "frame_protocol.h"
+#include "comm/uart1.h"
+#include "comm/frame_protocol.h"
 #include "stm32f1xx_hal.h"
 #include <string.h>
 

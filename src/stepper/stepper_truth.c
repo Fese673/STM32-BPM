@@ -1,5 +1,5 @@
 /*
- * silnik_krokowy / stepper_truth — implementacja jedynego zrodla prawdy.
+ * stepper / stepper_truth — implementacja jedynego zrodla prawdy.
  *
  * Layout flash (ostatnia strona 1 KB @ 0x0800FC00):
  *   slot A @ +0x00 (32 B), slot B @ +0x20 (32 B), reszta strony wolna.
@@ -12,7 +12,7 @@
  * Erase co najwyzej co drugi zapis; zapis tylko przy zmianie pozycji.
  */
 
-#include "silnik_krokowy/stepper_truth.h"
+#include "stepper/stepper_truth.h"
 #include "stm32f1xx_hal.h"
 
 volatile uint32_t g_truth_saves      = 0U;

@@ -39,7 +39,7 @@ extern "C" {
 /* Flaga w ramce 0xB2/0xB4: rama skalibrowana. */
 #define STEPPER_REF_FLAG_CAL_OK 0x01U
 
-/* Odtworzenie z flash. Wywolac raz w silnik_krokowy_init() PRZED startem
+/* Odtworzenie z flash. Wywolac raz w stepper_init() PRZED startem
  * petli. Zwraca przez wskazniki: pos (do wstawienia w licznik),
  * span, calOk (0/1). Brak waznego slotu = fabrycznie: 0, 0, 0. */
 void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out);

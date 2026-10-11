@@ -36,9 +36,9 @@
 #include "stm32f1xx_it.h"
 
 /* USER CODE BEGIN 0 */
-#include "max30102.h"
-#include "uart1.h"
-#include "uart2.h"
+#include "max30102/max30102.h"
+#include "comm/uart1.h"
+#include "comm/uart2.h"
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/

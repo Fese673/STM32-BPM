@@ -1,4 +1,4 @@
-#include "pwm_reg.h"
+#include "pwm/pwm_reg.h"
 #include "stm32f1xx_hal.h"
 
 extern TIM_HandleTypeDef htim3;

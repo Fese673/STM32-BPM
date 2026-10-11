@@ -1,5 +1,5 @@
 #include "debug/debug.h"
-#include "uart1.h"
+#include "comm/uart1.h"
 
 #include <stdarg.h>
 #include <stddef.h>

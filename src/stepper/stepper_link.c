@@ -1,18 +1,18 @@
 /*
- * silnik_krokowy / stepper_link — implementacja komunikacji + poll.
+ * stepper / stepper_link — implementacja komunikacji + poll.
  * (Bare-metal: brak FreeRTOS. Kolejka = statyczny ring 4-slotowy,
- *  stepper_poll() wolany co iteracje superloop z bramka 1 ms.)
+ *  stepper_poll() wolany co iteracje superloop.)
  *
  * Kolejka komand: frame RX (producent, nigdy nie blokuje) ->
  * stepper_poll (konsument). Ruch: stepper_motion (trapez)
  * pompowany w pollu; DONE wysylane na krawedzi dojazdu (z retry 1 s).
  */
 
-#include "silnik_krokowy/stepper_link.h"
-#include "silnik_krokowy/stepper_hw.h"
-#include "silnik_krokowy/stepper_motion.h"
-#include "silnik_krokowy/stepper_truth.h"
-#include "frame_protocol.h"
+#include "stepper/stepper_link.h"
+#include "stepper/stepper_hw.h"
+#include "stepper/stepper_motion.h"
+#include "stepper/stepper_truth.h"
+#include "comm/frame_protocol.h"
 
 #include "stm32f1xx_hal.h"
 
@@ -278,7 +278,7 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
     }
 }
 
-void silnik_krokowy_init(void)
+void stepper_init(void)
 {
     stepper_hw_init();
     stepper_hw_release();

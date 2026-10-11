@@ -8,8 +8,8 @@
  * Ramki są dekodowane w frame_rx_process() wywoływanym z main loop.
  */
 
-#include "frame_protocol.h"
-#include "cobs.h"
+#include "comm/frame_protocol.h"
+#include "comm/cobs.h"
 #include <string.h>
 
 /* ========================================================================== */

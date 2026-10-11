@@ -11,9 +11,9 @@
  * ******************************************************************************
  */
 
-#include "pwm_state.h"
+#include "pwm/pwm_state.h"
 #include "stm32f1xx_hal.h"
-#include "pwm_reg.h"
+#include "pwm/pwm_reg.h"
 #include "main.h"
 
 static TIM_HandleTypeDef htim2;

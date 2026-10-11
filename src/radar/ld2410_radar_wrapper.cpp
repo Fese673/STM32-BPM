@@ -1,8 +1,8 @@
-#include "ld2410_radar_wrapper.h"
-#include "ld2410_radar.h"
-#include "uart2.h"
+#include "radar/ld2410_radar_wrapper.h"
+#include "radar/ld2410_radar.h"
+#include "comm/uart2.h"
 #include "stm32f1xx_hal.h"
-#include "frame_protocol.h"
+#include "comm/frame_protocol.h"
 
 static ld2410_radar s_radar;
 static bool s_initialised = false;

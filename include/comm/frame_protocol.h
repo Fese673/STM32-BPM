@@ -19,7 +19,7 @@
  * Maksymalny rozmiar payload: 128B (kMaxPayloadBytes).
  */
 
-#include "Uart1.h"
+#include "comm/uart1.h"
 #include <stdint.h>
 #include <stdbool.h>
 

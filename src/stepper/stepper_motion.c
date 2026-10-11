@@ -1,10 +1,10 @@
 /*
- * silnik_krokowy / stepper_motion — trapez: przyspieszanie az do vmax,
+ * stepper / stepper_motion — trapez: przyspieszanie az do vmax,
  * hamowanie tak zeby wyhamowac dokladnie w target (decel = cur^2 / 2a).
  */
 
-#include "silnik_krokowy/stepper_motion.h"
-#include "silnik_krokowy/stepper_hw.h"  /* tylko stepper_hw_step() */
+#include "stepper/stepper_motion.h"
+#include "stepper/stepper_hw.h"  /* tylko stepper_hw_step() */
 
 static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
 {

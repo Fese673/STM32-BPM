@@ -1,6 +1,6 @@
 #include "stm32f1xx_hal.h"
-#include "oled.h"
-#include "oledfont.h"
+#include "oled/oled.h"
+#include "oled/oledfont.h"
 
 #define SIZE 16
 #define XLevelL 0x02

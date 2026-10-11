@@ -27,17 +27,17 @@
  * co pozwala zachować porządek i nie przeładowywać głównego main.c.
  */
 
-#include "oled.h"        // Wyswietlacz OLED SSD1306 (I2C1: PB6=SCL, PB7=SDA)
-#include "max30102.h"    // Czujnik tetna MAX30102   (I2C2: PB10=SCL, PB11=SDA)
+#include "oled/oled.h"                         // Wyswietlacz OLED SSD1306 (I2C1: PB6=SCL, PB7=SDA)
+#include "max30102/max30102.h"                 // Czujnik tetna MAX30102   (I2C2: PB10=SCL, PB11=SDA)
 #include <stdio.h>       // Standardowe funkcje C (printf, sprintf itd.)
-#include "uart1.h"
-#include "uart2.h"
-#include "frame_protocol.h"
-#include "ld2410_radar_wrapper.h"
-#include "frame_protocol.h"
-#include "pwm_reg.h"
-#include "brightness_handler.h"
-#include "silnik_krokowy/stepper_link.h"
+#include "comm/uart1.h"
+#include "comm/uart2.h"
+#include "comm/frame_protocol.h"
+#include "radar/ld2410_radar_wrapper.h"
+#include "pwm/pwm_reg.h"
+#include "pwm/pwm_state.h"
+#include "comm/brightness_handler.h"
+#include "stepper/stepper_link.h"
 
 /* USER CODE END Includes */
 
@@ -105,7 +105,7 @@ int main(void)
     uart1_init();
     frame_protocol_init();
     brightness_handler_init();   // ramka 0xB0 -> PWM_Reg_SetDuty
-    silnik_krokowy_init();       // ramka 0xB1 -> kolejka steppera
+    stepper_init();       // ramka 0xB1 -> ring steppera
     uart1_enable_rx();
 
     // Radar LD2410 na USART2 (PA2/PA3, 256000 baud)

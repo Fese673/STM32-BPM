@@ -1,4 +1,4 @@
-#include "uart2.h"
+#include "comm/uart2.h"
 
 #define RX_RING_SIZE  128U
 #define RX_RING_MASK  (RX_RING_SIZE - 1U)

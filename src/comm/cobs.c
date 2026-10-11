@@ -5,7 +5,7 @@
  * Binarna kompatybilność z protokołem ZEGAR↔GUTION.
  */
 
-#include "cobs.h"
+#include "comm/cobs.h"
 
 uint16_t cobs_crc16(const uint8_t *data, size_t length)
 {

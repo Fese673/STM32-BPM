@@ -1,5 +1,5 @@
 #include "stm32f1xx_hal.h"
-#include "max30102.h"
+#include "max30102/max30102.h"
 
 #define MAX30102_ADDR_WRITE 0xae
 #define MAX30102_ADDR_READ  0xaf

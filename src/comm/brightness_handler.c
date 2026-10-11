@@ -6,9 +6,9 @@
  * 3. ACK do ZEGAR: ramka 0xA2 z payload [ok, related_type]
  */
 
-#include "brightness_handler.h"
-#include "pwm_reg.h"
-#include "frame_protocol.h"
+#include "comm/brightness_handler.h"
+#include "pwm/pwm_reg.h"
+#include "comm/frame_protocol.h"
 
 void brightness_handler_init(void)
 {

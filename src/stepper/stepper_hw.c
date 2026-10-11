@@ -1,9 +1,9 @@
 /*
- * silnik_krokowy / stepper_hw — implementacja surowego sterowania.
+ * stepper / stepper_hw — implementacja surowego sterowania.
  * Half-step 8-stanowy: A AB B BC C CD D DA (kolejnosc = kierunek +).
  */
 
-#include "silnik_krokowy/stepper_hw.h"
+#include "stepper/stepper_hw.h"
 
 #define STEPPER_GPIO        GPIOA
 #define STEPPER_PIN_IN1     GPIO_PIN_4

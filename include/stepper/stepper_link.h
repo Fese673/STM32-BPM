@@ -2,7 +2,7 @@
 #define STEPPER_LINK_H
 
 /*
- * silnik_krokowy / stepper_link — KOMUNIKACJA ZEGAR(ESP32) <-> STM32.
+ * stepper / stepper_link — KOMUNIKACJA ZEGAR(ESP32) <-> STM32.
  *
  * !!! NIE RUSZA istniejacego protokolu: uzywa tylko publicznego
  *     frame_protocol_register() + frame_tx_send()/frame_tx_ack().
@@ -55,8 +55,8 @@
  * i CZYSCI zalegle MOVE (e-stop: po STOP nic starego nie ruszy).
  * DONE wysylane raz na dojazd, z retry do 1 s gdyby ring TX byl pelny.
  *
- * USUWANIE MODULU: skasuj foldery include/silnik_krokowy + src/silnik_krokowy
- * i 3 oznaczone linijki w main.c (SZUKAJ: SILNIK_KROKOWY). Nic wiecej.
+ * USUWANIE MODULU: skasuj foldery include/stepper + src/stepper
+ * i oznaczone linijki w main.c (SZUKAJ: SILNIK_KROKOWY). Nic wiecej.
  */
 
 #include <stdint.h>
@@ -83,9 +83,9 @@ extern "C" {
 #define STEPPER_CMD_SET_SPEED 0x09U
 #define STEPPER_CMD_SET_HOME  0x0AU
 
-/* Rejestruje handler 0xB1 + tworzy kolejke. Wywolac raz w main()
+/* Rejestruje handler 0xB1 + zeruje ring. Wywolac raz w main()
  * PO frame_protocol_init(). Nie tyka UART ani innych handlerow. */
-void silnik_krokowy_init(void);
+void stepper_init(void);
 
 /* Bare-metal poll steppera. Wolac co iteracje superloop (nieblokujacy). */
 void stepper_poll(void);
