@@ -12,12 +12,17 @@ static uint32_t s_last_ok_ms = 0U;
 static uint32_t s_radar_frames_ok = 0U;
 static uint32_t s_radar_frames_bad = 0U;
 
+/* Progi czulosci bramek 0..8 (0-100; WYZSZY = mniej czuly).
+ * Fabryczne: ruch 50,50,40,30,20,15,15,15,15 / postoj 0,0,40,40,30,30,20,20,20.
+ * Tu: czulosc o polowe mniejsza = progi x2 (100 = bramka praktycznie slepa).
+ * Bramki 0/1 postoj zostaja 0 (fabrycznie wylaczone). */
+static const uint8_t kRadarMovSens[9]  = {100, 100, 80, 60, 40, 30, 30, 30, 30};
+static const uint8_t kRadarStatSens[9] = {0,   0,   80, 80, 60, 60, 40, 40, 40};
+
 static int uart_available(void)
 {
     return (int)uart2_available();
-}
-
-static int uart_read(void)
+}static int uart_read(void)
 {
     return uart2_read_byte();
 }
@@ -48,6 +53,15 @@ void ld2410_radar_init(void)
      * basic (bramki = 0). Nie jest trwaly w module — po restarcie samego
      * radaru wlacza sie ponownie dopiero przy restarcie STM32. */
     (void)s_radar.requestStartEngineeringMode();
+
+    /* Czulosc o polowe mniejsza (progi x2). Tylko gdy radar odpowiedzial
+     * (martwy nie opoznia startu o ~9 timeouts). Strojenie: tabele wyzej. */
+    if (s_radar.isConnected()) {
+        for (uint8_t g = 0U; g < 9U; ++g) {
+            (void)s_radar.setGateSensitivityThreshold(g, kRadarMovSens[g],
+                                                      kRadarStatSens[g]);
+        }
+    }
 }
 
 /* Bare-metal poll — wolac co iteracje superloop. Wewnetrzny throttle
