@@ -53,6 +53,16 @@ static void max_note(HAL_StatusTypeDef st)
     }
 }
 
+/* Odbudowa peryferium I2C2 (DeInit/ReInit). Flaga BUSY STM32F1 potrafi
+ * zatrzasnac sie na starcie z zasilania (glitch na rampie) i nie puszcza
+ * az do resetu peryferium — zaden timeout tego nie wyczysci, a NRST tak
+ * (stad "po resecie dziala"). Wywolywac przed re-probe. */
+static void max_i2c_recover(void)
+{
+    HAL_I2C_DeInit(&hi2c2);
+    HAL_I2C_Init(&hi2c2);
+}
+
 uint8_t max30102_Detect(void)
 {
     if (HAL_I2C_IsDeviceReady(&hi2c2, MAX30102_ADDR_WRITE, 2, 5) == HAL_OK)
@@ -249,11 +259,13 @@ int16_t eachSampleDiff = 0; // How different is it from the previous sample?
 void max30102_cal(void)
 {
     if (max30102_zombie) {
-        /* Re-probe co 2 s: jeden IsDeviceReady (do 10 ms), bez wiszenia.
-         * Jak czujnik wrocil: pelny re-init i jazda dalej, bez NRST. */
+        /* Re-probe co 2 s: najpierw odbudowa I2C2 (BUSY-lockup), potem
+         * jeden IsDeviceReady (do 10 ms), bez wiszenia. Jak czujnik
+         * wrocil: pelny re-init i jazda dalej, bez NRST. */
         uint32_t now = HAL_GetTick();
         if ((now - s_reprobe_tick) >= MAX_REPROBE_MS) {
             s_reprobe_tick = now;
+            max_i2c_recover();
             if (max30102_Detect()) {
                 max30102_zombie = 0;
                 s_fail_count = 0U;
