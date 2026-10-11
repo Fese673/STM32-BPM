@@ -217,9 +217,10 @@ bool frame_tx_bpm(uint8_t bpm, uint8_t spo2)
 }
 
 bool frame_tx_radar(uint8_t presence, uint16_t movDist, uint8_t movEnergy,
-                    uint16_t statDist, uint8_t statEnergy, uint16_t detectDist)
+                    uint16_t statDist, uint8_t statEnergy, uint16_t detectDist,
+                    const uint8_t *movGates, const uint8_t *statGates)
 {
-    uint8_t payload[8];
+    uint8_t payload[26];
     payload[0] = presence;
     payload[1] = (uint8_t)(movDist & 0xFFU);
     payload[2] = (uint8_t)((movDist >> 8U) & 0xFFU);
@@ -228,7 +229,11 @@ bool frame_tx_radar(uint8_t presence, uint16_t movDist, uint8_t movEnergy,
     payload[5] = (uint8_t)((statDist >> 8U) & 0xFFU);
     payload[6] = statEnergy;
     payload[7] = (uint8_t)(detectDist & 0xFFU);  /* detect < 800 cm, 1 B wystarcza */
-    return frame_tx_send(FRAME_TYPE_RADAR, payload, 8U);
+    for (uint8_t g = 0U; g < 9U; g++) {
+        payload[8U + g]  = (movGates  != NULL) ? movGates[g]  : 0U;
+        payload[17U + g] = (statGates != NULL) ? statGates[g] : 0U;
+    }
+    return frame_tx_send(FRAME_TYPE_RADAR, payload, sizeof(payload));
 }
 
 bool frame_tx_ack(uint8_t ok, uint8_t related_type)

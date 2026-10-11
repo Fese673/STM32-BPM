@@ -41,11 +41,17 @@ void ld2410_radar_init(void)
         s_initialised = true;
     }
     uart2_enable_rx();
+
+    /* Tryb engineering (energie 9 bramek) do ekranu radaru na Guition.
+     * Jednorazowo przy starcie; przy niepowodzeniu radar dalej strumieniuje
+     * basic (bramki = 0). Nie jest trwaly w module — po restarcie samego
+     * radaru wlacza sie ponownie dopiero przy restarcie STM32. */
+    (void)s_radar.requestStartEngineeringMode();
 }
 
 /* Bare-metal poll — wolac co iteracje superloop. Wewnetrzny throttle
  * 50 ms (radar zyje) / 500 ms (zombie), jak wczesniej vTaskDelay.
- * Heartbeat 0xA3 do ZEGAR: przy zmianie stanu lub co 1 s, ZAWSZE gdy
+ * Heartbeat 0xA3 do ZEGAR: przy zmianie stanu lub co 250 ms, ZAWSZE gdy
  * LD2410_ENABLE (takze przy martwym radarze — wtedy presence=0x80 LINK-BAD). */
 void ld2410_radar_poll(void)
 {
@@ -87,6 +93,8 @@ void ld2410_radar_poll(void)
     uint8_t presence = 0U;
     uint16_t movDist = 0U, statDist = 0U, detDist = 0U;
     uint8_t movEnergy = 0U, statEnergy = 0U;
+    uint8_t movGates[9] = {0U};
+    uint8_t statGates[9] = {0U};
     if (link_ok) {
         if (s_radar.presenceDetected()) presence |= 0x01U;
         if (s_radar.movingTargetDetected()) presence |= 0x02U;
@@ -96,14 +104,21 @@ void ld2410_radar_poll(void)
         statDist  = s_radar.stationaryTargetDistance();
         statEnergy = s_radar.stationaryTargetEnergy();
         detDist   = s_radar.detectionDistance();
+        for (uint8_t g = 0U; g < 9U; g++) {
+            movGates[g]  = s_radar.movingEnergyAtGate(g);
+            statGates[g] = s_radar.stationaryEnergyAtGate(g);
+        }
     } else {
         presence = 0x80U;
         if (s_window_bytes >= 4U) presence |= 0x40U;
     }
 
-    if ((presence != last_presence) || ((now - last_send_ms) >= 1000U)) {
+    /* 250 ms (nie 1 s): slupki bramek na ekranie maja byc plynne.
+     * ~32 B na drucie przy 9600 = ~3% pasma. */
+    if ((presence != last_presence) || ((now - last_send_ms) >= 250U)) {
         (void)frame_tx_radar(presence, movDist, movEnergy,
-                             statDist, statEnergy, detDist);
+                             statDist, statEnergy, detDist,
+                             movGates, statGates);
         last_presence = presence;
         last_send_ms = now;
         s_window_bytes = 0U;

@@ -14,11 +14,13 @@
  *   kStmTypePpg         0xA0  STM32→ZEGAR  payload=[diff_lo, diff_hi]
  *   kStmTypeBpm         0xA1  STM32→ZEGAR  payload=[bpm, spo2]
  *   kStmTypeAck         0xA2  STM32→ZEGAR  payload=[ok, relatedType]
- *   kStmTypeRadar       0xA3  STM32→ZEGAR  payload=[presence,mov_lo,mov_hi,movE,stat_lo,stat_hi,statE,detect]
+ *   kStmTypeRadar       0xA3  STM32→ZEGAR  payload 26 B:
+ *                                          [presence,mov_lo,mov_hi,movE,stat_lo,stat_hi,statE,detect,
+ *                                           movGate0..8,statGate0..8]
  *                                          presence: b0=ktos,b1=ruch,b2=stan,
  *                                          b7=LINK-BAD (radar martwy),
  *                                          b6=GARBAGE (bajty na PA3, brak ramek: zly baud?)
- *                                          wysylka: przy zmianie stanu lub co 1 s, zawsze gdy LD2410_ENABLE
+ *                                          wysylka: przy zmianie stanu lub co 250 ms, zawsze gdy LD2410_ENABLE
  *   kStmTypeBrightness  0xB0  ZEGAR→STM32  payload=[value 0..100]
  *
  * Maksymalny rozmiar payload: 128B (kMaxPayloadBytes).
@@ -71,7 +73,8 @@ bool frame_tx_send(uint8_t type, const uint8_t *payload, uint16_t len);
 bool frame_tx_ppg(int16_t diff);
 bool frame_tx_bpm(uint8_t bpm, uint8_t spo2);
 bool frame_tx_radar(uint8_t presence, uint16_t movDist, uint8_t movEnergy,
-                    uint16_t statDist, uint8_t statEnergy, uint16_t detectDist);
+                    uint16_t statDist, uint8_t statEnergy, uint16_t detectDist,
+                    const uint8_t *movGates, const uint8_t *statGates);
 bool frame_tx_ack(uint8_t ok, uint8_t related_type);
 
 /* Statystyki (do debug, aktualizowane tylko w main-loop/task context) */
