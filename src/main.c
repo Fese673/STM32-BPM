@@ -87,7 +87,9 @@ int main(void)
 
     /* Initialize all configured peripherals */
     MX_GPIO_Init();
+#if OLED_ENABLE
     MX_I2C1_Init();
+#endif
     MX_I2C2_Init();
     MX_TIM3_Init();
     PWM_Reg_Init();   // start TIM3_CH1 (PA6) — jasnosc 7-seg, domyslnie 0
@@ -109,7 +111,11 @@ int main(void)
     // Radar LD2410 na USART2 (PA2/PA3, 256000 baud)
     ld2410_radar_init();
 
+#if OLED_ENABLE
     oled_zombie     = OLED_Detect()     ? 0 : 1;
+#else
+    oled_zombie     = 1;   /* OLED wylaczony flaga — pelne odciecie */
+#endif
     max30102_zombie = max30102_Detect() ? 0 : 1;
 
     if (!oled_zombie) {
@@ -153,15 +159,18 @@ int main(void)
  * OLED non-blocking: tylko wpisy do cache + watchdog/kick/recover. */
 static void i2c_ctrl_poll(void)
 {
+#if OLED_ENABLE
     OLED_WatchdogPoll();
     if (OLED_GetError() && !oled_zombie) {
         OLED_Recover();
     } else if (!oled_zombie) {
         OLED_Kick();
     }
+#endif
 
     if (max30102_zombie)
     {
+#if OLED_ENABLE
         /* Fallback bez czujnika: ekran ma zyc — myslniki, plaski
          * przewijany wykres i napis. */
         uint8_t d;
@@ -169,6 +178,7 @@ static void i2c_ctrl_poll(void)
         OLED_drawChart(0.0f);
         OLED_showHeart(1);
         OLED_ShowString(0, 0, "BRAK CZUJNIKA ");
+#endif
     }
     else
     {
@@ -179,6 +189,7 @@ static void i2c_ctrl_poll(void)
         uint8_t heartReat = max30102_getHeartRate();
         int16_t diff      = max30102_getDiff();
 
+#if OLED_ENABLE
         if (heartReat > 0)
         {
             if (heartReat >= 100)
@@ -201,8 +212,8 @@ static void i2c_ctrl_poll(void)
                 OLED_showNum(3, 1);
             else
                 OLED_showNum(3, 10);
-            OLED_showNum(4, (spo2 % 100) / 10);
-            OLED_showNum(5, spo2 % 10);
+        OLED_showNum(4, (spo2 % 100) / 10);
+        OLED_showNum(5, spo2 % 10);
         }
         else
         {
@@ -217,6 +228,7 @@ static void i2c_ctrl_poll(void)
             OLED_showHeart(0);
         else
             OLED_showHeart(1);
+#endif
 
         if (diff > 50) {
             HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
@@ -235,6 +247,7 @@ static void i2c_ctrl_poll(void)
         (void)frame_tx_ppg(diff);
     }
 
+#if OLED_ENABLE
     /* TEMP-DIAG: co silnik dostal (jeden test, potem usunac). */
     {
         uint8_t dcmd = 0U, dbusy = 0U;
@@ -249,6 +262,7 @@ static void i2c_ctrl_poll(void)
         snprintf(line, sizeof(line), "P%ld B%u", (long)dpos, (unsigned)dbusy);
         OLED_ShowString(0, 1, line);
     }
+#endif
 }
 
 
@@ -292,17 +306,16 @@ void SystemClock_Config(void)
 
 static void MX_NVIC_Init(void)
 {
-    HAL_NVIC_SetPriority(I2C1_EV_IRQn, 1, 0);
-    HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
-
     // SysTick — bazowy tick HAL (najwyzszy priorytet)
     HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
 
+#if OLED_ENABLE
     // I2C1 (OLED, lancuch IT + recovery z DeInit)
     HAL_NVIC_SetPriority(I2C1_EV_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
     HAL_NVIC_SetPriority(I2C1_ER_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
+#endif
 
     // UART1 — kanal ramek COBS do ZEGAR
     HAL_NVIC_SetPriority(USART1_IRQn, 2, 0);
