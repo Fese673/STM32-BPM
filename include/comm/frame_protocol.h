@@ -15,7 +15,8 @@
  *   kStmTypeBpm         0xA1  STM32→ZEGAR  payload=[bpm, spo2]
  *   kStmTypeAck         0xA2  STM32→ZEGAR  payload=[ok, relatedType]
  *   kStmTypeRadar       0xA3  STM32→ZEGAR  payload=[presence,mov_lo,mov_hi,movE,stat_lo,stat_hi,statE,detect]
- *                                          wysylka: przy zmianie stanu lub co 1 s (wrapper radaru)
+ *                                          presence: b0=ktos,b1=ruch,b2=stan,b7=LINK-BAD (radar martwy)
+ *                                          wysylka: przy zmianie stanu lub co 1 s, zawsze gdy LD2410_ENABLE
  *   kStmTypeBrightness  0xB0  ZEGAR→STM32  payload=[value 0..100]
  *
  * Maksymalny rozmiar payload: 128B (kMaxPayloadBytes).

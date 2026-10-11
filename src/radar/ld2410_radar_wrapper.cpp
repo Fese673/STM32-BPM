@@ -44,58 +44,60 @@ void ld2410_radar_init(void)
 }
 
 /* Bare-metal poll — wolac co iteracje superloop. Wewnetrzny throttle
- * 50 ms (radar zyje) / 500 ms (zombie), jak wczesniej vTaskDelay. */
+ * 50 ms (radar zyje) / 500 ms (zombie), jak wczesniej vTaskDelay.
+ * Heartbeat 0xA3 do ZEGAR: przy zmianie stanu lub co 1 s, ZAWSZE gdy
+ * LD2410_ENABLE (takze przy martwym radarze — wtedy presence=0x80 LINK-BAD). */
 void ld2410_radar_poll(void)
 {
-    if (!s_initialised) {
-        return;
-    }
-
-    static uint32_t s_last_poll_ms = 0U;
-    uint32_t now_ms = HAL_GetTick();
-    if ((now_ms - s_last_poll_ms) < (s_radar_zombie ? 500U : 50U)) {
-        return;
-    }
-    s_last_poll_ms = now_ms;
-
-    // throttling wysyłki do ZEGAR - tylko przy zmianie lub co 1s
+    // throttling wysyłki do ZEGAR - zmiana stanu lub co 1 s
     static uint8_t last_presence = 0xFF;
     static uint32_t last_send_ms = 0U;
+    static uint32_t s_last_poll_ms = 0U;
 
-    bool got = s_radar.read();
-    if (got && s_radar.isConnected()) {
-        s_last_ok_ms = HAL_GetTick();
-        s_radar_zombie = false;
-        ++s_radar_frames_ok;
-    } else {
-        if ((HAL_GetTick() - s_last_ok_ms) > 5000U) {
-            s_radar_zombie = true;
+    uint32_t now = HAL_GetTick();
+
+    if (s_initialised) {
+        if ((now - s_last_poll_ms) >= (s_radar_zombie ? 500U : 50U)) {
+            s_last_poll_ms = now;
+
+            bool got = s_radar.read();
+            if (got && s_radar.isConnected()) {
+                s_last_ok_ms = now;
+                s_radar_zombie = false;
+                ++s_radar_frames_ok;
+            } else {
+                if ((now - s_last_ok_ms) > 5000U) {
+                    s_radar_zombie = true;
+                }
+                if (!got) ++s_radar_frames_bad;
+            }
         }
-        if (!got) ++s_radar_frames_bad;
     }
 
-    // Wysyłka do ZEGAR tylko jeśli radar żyje i (zmiana stanu lub 1s timeout)
-    if (!s_radar_zombie) {
-        uint8_t presence = 0U;
+    // Diagnostyka lacza: wysylaj zawsze, zywy radar = bity 0..2,
+    // martwy/zombie/niezainicjalizowany = bit 7 LINK-BAD.
+    bool link_ok = s_initialised && !s_radar_zombie && s_radar.isConnected();
+    uint8_t presence = 0U;
+    uint16_t movDist = 0U, statDist = 0U, detDist = 0U;
+    uint8_t movEnergy = 0U, statEnergy = 0U;
+    if (link_ok) {
         if (s_radar.presenceDetected()) presence |= 0x01U;
         if (s_radar.movingTargetDetected()) presence |= 0x02U;
         if (s_radar.stationaryTargetDetected()) presence |= 0x04U;
+        movDist   = s_radar.movingTargetDistance();
+        movEnergy = s_radar.movingTargetEnergy();
+        statDist  = s_radar.stationaryTargetDistance();
+        statEnergy = s_radar.stationaryTargetEnergy();
+        detDist   = s_radar.detectionDistance();
+    } else {
+        presence = 0x80U;
+    }
 
-        uint32_t now = HAL_GetTick();
-        bool changed = (presence != last_presence);
-        bool periodic = (now - last_send_ms) >= 1000U;
-
-        if ((changed || periodic) && s_radar.isConnected()) {
-            (void)frame_tx_radar(
-                presence,
-                s_radar.movingTargetDistance(),
-                s_radar.movingTargetEnergy(),
-                s_radar.stationaryTargetDistance(),
-                s_radar.stationaryTargetEnergy(),
-                s_radar.detectionDistance());
-            last_presence = presence;
-            last_send_ms = now;
-        }
+    if ((presence != last_presence) || ((now - last_send_ms) >= 1000U)) {
+        (void)frame_tx_radar(presence, movDist, movEnergy,
+                             statDist, statEnergy, detDist);
+        last_presence = presence;
+        last_send_ms = now;
     }
 }
 
