@@ -1,6 +1,10 @@
 #ifndef LD2410_RADAR_WRAPPER_H
 #define LD2410_RADAR_WRAPPER_H
 
+/* Twardy wylacznik calego modulu (test A/B). 0 = brak init USART2,
+ * brak poll — reszta firmware jedzie bez zmian. */
+#define LD2410_ENABLE 1
+
 #include <stdint.h>
 #include <stdbool.h>
 

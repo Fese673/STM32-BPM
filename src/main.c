@@ -90,11 +90,15 @@ int main(void)
 #if OLED_ENABLE
     MX_I2C1_Init();
 #endif
+#if MAX30102_ENABLE
     MX_I2C2_Init();
+#endif
     MX_TIM3_Init();
     PWM_Reg_Init();   // start TIM3_CH1 (PA6) — jasnosc 7-seg, domyslnie 0
     MX_USART1_UART_Init();
+#if LD2410_ENABLE
     MX_USART2_UART_Init();
+#endif
     MX_NVIC_Init();
 
     /* USER CODE BEGIN 2 */
@@ -109,14 +113,20 @@ int main(void)
     uart1_enable_rx();
 
     // Radar LD2410 na USART2 (PA2/PA3, 256000 baud)
+#if LD2410_ENABLE
     ld2410_radar_init();
+#endif
 
 #if OLED_ENABLE
     oled_zombie     = OLED_Detect()     ? 0 : 1;
 #else
     oled_zombie     = 1;   /* OLED wylaczony flaga — pelne odciecie */
 #endif
+#if MAX30102_ENABLE
     max30102_zombie = max30102_Detect() ? 0 : 1;
+#else
+    max30102_zombie = 1;   /* pulsoksymetr wylaczony flaga (fallback) */
+#endif
 
     if (!oled_zombie) {
         OLED_Init();       // ekran (non-blocking IT chain)
@@ -150,8 +160,10 @@ int main(void)
             i2c_ctrl_poll();         // OLED + MAX30102 co 20 ms
         }
 
+#if LD2410_ENABLE
         ld2410_radar_poll();         // radar (wewnetrzny throttle 50/500 ms)
-        stepper_poll();              // silnik (wewnetrzna bramka 1 ms)
+#endif
+        stepper_poll();              // silnik (timing kroku z next_us)
     }
 }
 
@@ -321,9 +333,11 @@ static void MX_NVIC_Init(void)
     HAL_NVIC_SetPriority(USART1_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(USART1_IRQn);
 
+#if LD2410_ENABLE
     // UART2 — radar LD2410
     HAL_NVIC_SetPriority(USART2_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(USART2_IRQn);
+#endif
 }
 
 static void MX_TIM3_Init(void)
@@ -415,6 +429,7 @@ static void MX_USART1_UART_Init(void)
     }
 }
 
+#if LD2410_ENABLE
 void MX_USART2_UART_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -445,6 +460,7 @@ void MX_USART2_UART_Init(void)
         _Error_Handler(__FILE__, __LINE__);
     }
 }
+#endif
 
 static void MX_I2C1_Init(void)
 {

@@ -1,6 +1,10 @@
 #ifndef __MAX_30102_H_
 #define __MAX_30102_H_
 
+/* Twardy wylacznik calego modulu (test A/B). 0 = brak init I2C2,
+ * max30102_zombie = 1 na sztywno (sciezka fallback) — reszta jedzie. */
+#define MAX30102_ENABLE 1
+
 #define MAX30102_INTERRUPT_STATUS_ALMOST_FULL 0x80
 #define MAX30102_INTERRUPT_STATUS_NEW_FIFO_DATA 0x40
 #define MAX30102_INTERRUPT_STATUS_ALC_OVF 0x20
