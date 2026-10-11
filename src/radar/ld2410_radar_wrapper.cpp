@@ -1,5 +1,6 @@
 #include "radar/ld2410_radar_wrapper.h"
 #include "radar/ld2410_radar.h"
+#include "radar/radar_out.h"
 #include "comm/uart2.h"
 #include "stm32f1xx_hal.h"
 #include "comm/frame_protocol.h"
@@ -112,6 +113,10 @@ void ld2410_radar_poll(void)
         presence = 0x80U;
         if (s_window_bytes >= 4U) presence |= 0x40U;
     }
+
+    /* Bit 3 = sprzetowy OUT (PB5), niezalezny od UART: HIGH = ktos jest.
+     * Doklejany zawsze (takze przy LINK-BAD) — do automatu ekranu na Guitionie. */
+    if (radar_out_present()) presence |= 0x08U;
 
     /* 250 ms (nie 1 s): slupki bramek na ekranie maja byc plynne.
      * ~32 B na drucie przy 9600 = ~3% pasma. */

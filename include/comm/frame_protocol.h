@@ -17,7 +17,7 @@
  *   kStmTypeRadar       0xA3  STM32→ZEGAR  payload 26 B:
  *                                          [presence,mov_lo,mov_hi,movE,stat_lo,stat_hi,statE,detect,
  *                                           movGate0..8,statGate0..8]
- *                                          presence: b0=ktos,b1=ruch,b2=stan,
+ *                                          presence: b0=ktos,b1=ruch,b2=stan,b3=OUT(PB5),
  *                                          b7=LINK-BAD (radar martwy),
  *                                          b6=GARBAGE (bajty na PA3, brak ramek: zly baud?)
  *                                          wysylka: przy zmianie stanu lub co 250 ms, zawsze gdy LD2410_ENABLE
