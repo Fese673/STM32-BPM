@@ -15,7 +15,9 @@
  *   kStmTypeBpm         0xA1  STM32→ZEGAR  payload=[bpm, spo2]
  *   kStmTypeAck         0xA2  STM32→ZEGAR  payload=[ok, relatedType]
  *   kStmTypeRadar       0xA3  STM32→ZEGAR  payload=[presence,mov_lo,mov_hi,movE,stat_lo,stat_hi,statE,detect]
- *                                          presence: b0=ktos,b1=ruch,b2=stan,b7=LINK-BAD (radar martwy)
+ *                                          presence: b0=ktos,b1=ruch,b2=stan,
+ *                                          b7=LINK-BAD (radar martwy),
+ *                                          b6=GARBAGE (bajty na PA3, brak ramek: zly baud?)
  *                                          wysylka: przy zmianie stanu lub co 1 s, zawsze gdy LD2410_ENABLE
  *   kStmTypeBrightness  0xB0  ZEGAR→STM32  payload=[value 0..100]
  *

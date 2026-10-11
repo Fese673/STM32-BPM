@@ -56,6 +56,11 @@ void ld2410_radar_poll(void)
 
     uint32_t now = HAL_GetTick();
 
+    // Okno diagnostyczne: ile bajtow slyszy PA3 miedzy heartbeatami.
+    // (probkowane PRZED read(), ktory drenuje kolejke UART.)
+    static uint32_t s_window_bytes = 0U;
+    s_window_bytes += uart2_available();
+
     if (s_initialised) {
         if ((now - s_last_poll_ms) >= (s_radar_zombie ? 500U : 50U)) {
             s_last_poll_ms = now;
@@ -75,7 +80,9 @@ void ld2410_radar_poll(void)
     }
 
     // Diagnostyka lacza: wysylaj zawsze, zywy radar = bity 0..2,
-    // martwy/zombie/niezainicjalizowany = bit 7 LINK-BAD.
+    // martwy = bit 7 LINK-BAD + bit 6 GARBAGE (cos przylatuje na PA3,
+    // ale brak poprawnych ramek: prog >=4 B/okno odcina pojedyncze
+    // szumy wiszącego pinu).
     bool link_ok = s_initialised && !s_radar_zombie && s_radar.isConnected();
     uint8_t presence = 0U;
     uint16_t movDist = 0U, statDist = 0U, detDist = 0U;
@@ -91,6 +98,7 @@ void ld2410_radar_poll(void)
         detDist   = s_radar.detectionDistance();
     } else {
         presence = 0x80U;
+        if (s_window_bytes >= 4U) presence |= 0x40U;
     }
 
     if ((presence != last_presence) || ((now - last_send_ms) >= 1000U)) {
@@ -98,6 +106,7 @@ void ld2410_radar_poll(void)
                              statDist, statEnergy, detDist);
         last_presence = presence;
         last_send_ms = now;
+        s_window_bytes = 0U;
     }
 }
 
