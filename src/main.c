@@ -34,6 +34,7 @@
 #include "comm/uart2.h"
 #include "comm/frame_protocol.h"
 #include "radar/ld2410_radar_wrapper.h"
+#include "radar/radar_out.h"
 #include "pwm/pwm_reg.h"
 #include "comm/brightness_handler.h"
 #include "stepper/stepper_link.h"
@@ -83,6 +84,12 @@ int main(void)
 {
     /* MCU Configuration --------------------------------------------------------*/
     HAL_Init();
+
+    /* Fail-safe jasnosci 7-seg (PA6/7447 BLANK): od pierwszej chwili LOW =
+     * pelna jasnosc. Reset zostawia PA6 floating, a _Error_Handler nie moze
+     * oddac 7447 w stanie nieustalonym. */
+    PWM_Reg_FailSafe();
+
     SystemClock_Config(); // 72 MHz
 
     /* Initialize all configured peripherals */
@@ -94,7 +101,7 @@ int main(void)
     MX_I2C2_Init();
 #endif
     MX_TIM3_Init();
-    PWM_Reg_Init();   // start TIM3_CH1 (PA6) — jasnosc 7-seg, domyslnie 0
+    PWM_Reg_Init();   // start TIM3_CH1 (PA6) — jasnosc 7-seg, start 3%
     MX_USART1_UART_Init();
 #if LD2410_ENABLE
     MX_USART2_UART_Init();
@@ -112,9 +119,10 @@ int main(void)
     stepper_init();       // ramka 0xB1 -> ring steppera
     uart1_enable_rx();
 
-    // Radar LD2410 na USART2 (PA2/PA3, 256000 baud)
+    // Radar LD2410 na USART2 (PA2/PA3, 256000 baud) + pin OUT (PB5)
 #if LD2410_ENABLE
     ld2410_radar_init();
+    radar_out_init();
 #endif
 
 #if OLED_ENABLE
@@ -162,6 +170,7 @@ int main(void)
 
 #if LD2410_ENABLE
         ld2410_radar_poll();         // radar (wewnetrzny throttle 50/500 ms)
+        radar_out_poll();            // pin OUT (debounce 50 ms)
 #endif
         stepper_poll();              // silnik (timing kroku z next_us)
     }

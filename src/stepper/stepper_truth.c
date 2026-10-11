@@ -43,16 +43,33 @@ typedef struct {
      * nieczytane; ten sam layout u16, stare sloty maja tu 1000 = bit0 0).
      * bit0 = radar_en (automat LD2410C wlaczony). */
     uint16_t flags;
-    uint16_t home_deg;   /* cel powrotu po resecie 0..360 (wczesniej rsvd) */
+    uint16_t home_deg;   /* cel powrotu po resecie 0..360 */
+    uint16_t target_deg; /* WYBRANY kat (UI/automat), 0xFFFF = brak -> default */
     uint16_t crc;
 } truth_slot_t;
+
+/* Stary layout (24 B, przed target_deg) — czytany tylko przy migracji
+ * po aktualizacji firmware: zachowuje kalibracje/home/predkosc. */
+typedef struct {
+    uint32_t magic;
+    uint32_t seq;
+    int32_t  pos;
+    int32_t  span;
+    uint16_t home_speed;
+    uint16_t home_accel; /* = TRUTH_HOME_ACCEL (1000) */
+    uint16_t home_deg;
+    uint16_t crc;
+} truth_slot_old_t;
+
+#define TRUTH_TARGET_DEF 45U
 
 static uint32_t s_seq = 0U;
 static int32_t  s_span = 0L;
 static uint8_t  s_cal_ok = 0U;
 static uint16_t s_home_speed = TRUTH_SPEED_DEF; /* nadpisuje flash w init */
 static uint16_t s_home_deg = 0U; /* cel powrotu po resecie (nadpisuje flash) */
-static uint8_t s_radar_en = 0U; /* automat LD2410C (nadpisuje flash) */
+static uint8_t  s_radar_en = 0U; /* automat LD2410C (nadpisuje flash) */
+static uint16_t s_target_deg = TRUTH_TARGET_DEF; /* wybrany kat (nadpisuje flash) */
 static int32_t  s_last_saved_pos = 0L;
 static uint8_t  s_have_saved_base = 0U;
 
@@ -101,6 +118,27 @@ static uint8_t slot_erased(uint32_t addr)
     truth_slot_t s;
     slot_read(addr, &s);
     return s.magic == 0xFFFFFFFFUL ? 1U : 0U;
+}
+
+/* --- Migracja starego layoutu (24 B, bez target_deg) --- */
+
+static uint16_t slot_crc_old(const truth_slot_old_t *s)
+{
+    return crc16_ccitt((const uint8_t *)s,
+                       (uint32_t)((const uint8_t *)&s->crc - (const uint8_t *)s));
+}
+
+static void slot_read_old(uint32_t addr, truth_slot_old_t *out)
+{
+    const uint8_t *p = (const uint8_t *)addr;
+    uint8_t *d = (uint8_t *)out;
+    for (uint32_t i = 0U; i < sizeof(truth_slot_old_t); ++i) d[i] = p[i];
+}
+
+static uint8_t slot_valid_old(const truth_slot_old_t *s)
+{
+    if (s->magic != TRUTH_MAGIC) return 0U;
+    return slot_crc_old(s) == s->crc ? 1U : 0U;
 }
 
 /* Fizyczny zapis slotu. Kontekst: stepper_poll, postoj. Zwraca 1 gdy OK. */
@@ -164,6 +202,7 @@ static uint8_t truth_save_now(int32_t pos)
     s.home_speed  = s_home_speed;
     s.flags       = s_radar_en ? TRUTH_FLAG_RADAR_EN : 0U;
     s.home_deg    = s_home_deg;
+    s.target_deg  = s_target_deg;
     s.crc         = slot_crc(&s);
 
     /* Cel: slot niewazny; gdy oba wazne — starszy (mniejszy seq). */
@@ -211,6 +250,10 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
         s_home_deg = hd;
         /* Automat radaru (stare sloty maja w flags 1000 = bit0 0 = OFF). */
         s_radar_en = (uint8_t)((best->flags & TRUTH_FLAG_RADAR_EN) != 0U);
+        /* Wybrany kat (0xFFFF/poza zakresem = default). */
+        uint16_t td = best->target_deg;
+        if (td == 0xFFFFU || td > 360U) td = TRUTH_TARGET_DEF;
+        s_target_deg = td;
         s_last_saved_pos = best->pos;
         s_have_saved_base = 1U;
         if (pos_out != NULL)    *pos_out = best->pos;
@@ -222,15 +265,52 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
             s_home_needed = (uint8_t)(s_cal_ok && (best->pos != (int32_t)ht));
         }
     } else {
-        s_seq = 0U;
-        s_span = 0L;
-        s_cal_ok = 0U;
-        s_radar_en = 0U;
-        s_have_saved_base = 0U;
-        s_home_needed = 0U;
-        if (pos_out != NULL)    *pos_out = 0L;
-        if (span_out != NULL)   *span_out = 0L;
-        if (cal_ok_out != NULL) *cal_ok_out = 0U;
+        /* Migracja ze starego layoutu 24 B (po aktualizacji firmware):
+         * zachowaj kalibracje/home/predkosc; nowe pola = default. */
+        truth_slot_old_t oa, ob;
+        slot_read_old(TRUTH_SLOT_A, &oa);
+        slot_read_old(TRUTH_SLOT_B, &ob);
+        const uint8_t voa = slot_valid_old(&oa);
+        const uint8_t vob = slot_valid_old(&ob);
+        const truth_slot_old_t *old = NULL;
+        if (voa && vob)      old = (oa.seq >= ob.seq) ? &oa : &ob;
+        else if (voa)        old = &oa;
+        else if (vob)        old = &ob;
+
+        if (old != NULL) {
+            s_seq = old->seq;
+            s_span = old->span;
+            s_cal_ok = (old->span >= TRUTH_MIN_SPAN) ? 1U : 0U;
+            uint16_t hs = old->home_speed;
+            if (hs < TRUTH_SPEED_MIN || hs > TRUTH_SPEED_MAX) hs = TRUTH_SPEED_DEF;
+            if (hs == 0U || hs == 0xFFFFU) hs = TRUTH_SPEED_DEF;
+            s_home_speed = hs;
+            uint16_t hd = old->home_deg;
+            if (hd == 0xFFFFU || hd > 360U) hd = 0U;
+            s_home_deg = hd;
+            s_radar_en = 0U;                /* stary layout nie mial flag */
+            s_target_deg = TRUTH_TARGET_DEF;
+            s_last_saved_pos = old->pos;
+            s_have_saved_base = 1U;
+            if (pos_out != NULL)    *pos_out = old->pos;
+            if (span_out != NULL)   *span_out = old->span;
+            if (cal_ok_out != NULL) *cal_ok_out = s_cal_ok;
+            {
+                int64_t ht = s_cal_ok ? (((int64_t)s_home_deg * (int64_t)s_span) / 90LL) : 0LL;
+                s_home_needed = (uint8_t)(s_cal_ok && (old->pos != (int32_t)ht));
+            }
+        } else {
+            s_seq = 0U;
+            s_span = 0L;
+            s_cal_ok = 0U;
+            s_radar_en = 0U;
+            s_target_deg = TRUTH_TARGET_DEF;
+            s_have_saved_base = 0U;
+            s_home_needed = 0U;
+            if (pos_out != NULL)    *pos_out = 0L;
+            if (span_out != NULL)   *span_out = 0L;
+            if (cal_ok_out != NULL) *cal_ok_out = 0U;
+        }
     }
     s_save_armed = 0U;
 }
@@ -340,6 +420,26 @@ void truth_set_speed(uint16_t speed, int32_t cur_pos, uint8_t busy)
     if (busy) {
         /* W ruchu: nie stallujemy erase'em — uzbrajamy zapis na postoj
          * (tick dopisze 2 s po krawedzi; pozycje i tak odswieza). */
+        s_save_armed = 1U;
+        s_save_pos = cur_pos;
+        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
+        return;
+    }
+    if (s_have_saved_base) {
+        truth_save_now(s_last_saved_pos);
+    } else {
+        truth_save_now(0L);
+    }
+}
+
+uint16_t truth_target_deg(void) { return s_target_deg; }
+
+void truth_set_target(uint16_t deg, int32_t cur_pos, uint8_t busy)
+{
+    if (deg > 360U) deg = 360U;
+    if (deg == s_target_deg) return; /* bez zmian — nie zuzywamy flash */
+    s_target_deg = deg;
+    if (busy) {
         s_save_armed = 1U;
         s_save_pos = cur_pos;
         s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);

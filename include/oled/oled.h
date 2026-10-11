@@ -3,7 +3,7 @@
 
 /* Twardy wylacznik calego modulu (test A/B). 0 = brak init, brak I2C1,
  * brak rysowania — reszta firmware jedzie bez zmian. */
-#define OLED_ENABLE 1
+#define OLED_ENABLE 0
 
 // SSD1306 na magistrali I2C1. HAL przyjmuje adres w formacie 8-bitowym
 // (7-bitowe adresy, bit R/W w bit0): 0x3C(SA0=LOW) = 0x78, 0x3D(SA0=HIGH) = 0x7A.

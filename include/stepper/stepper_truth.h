@@ -105,6 +105,12 @@ int32_t truth_home_steps(void);
 uint8_t truth_radar_en(void);
 void truth_set_radar_en(uint8_t en, int32_t cur_pos, uint8_t busy);
 
+/* WYBRANY kat z UI (single-click presetu; persist we flash). Sluzy
+ * automatowi LD2410C (otwarcie) i wraca echem REF do HMI. Default 45
+ * (0xFFFF/poza zakresem w slocie = default). Zapis jak SET_SPEED. */
+uint16_t truth_target_deg(void);
+void truth_set_target(uint16_t deg, int32_t cur_pos, uint8_t busy);
+
 /* Diagnostyka BEZ UART (podglad w debuggerze). */
 extern volatile uint32_t g_truth_saves;
 extern volatile uint32_t g_truth_save_fail;
