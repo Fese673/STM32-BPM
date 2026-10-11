@@ -31,6 +31,28 @@ extern I2C_HandleTypeDef hi2c2;
 
 volatile uint8_t max30102_zombie = 0;
 
+/* Dynamiczne zombie: N kolejnych faili I2C w getterach = czujnik chory.
+ * Chory czujnik palil timeouty ~40 ms na poll 20 ms i dusil silnik —
+ * bez tego licznika petla wisiala tak az do NRST. Po trip: zombie=1
+ * (zero ruchu I2C) + re-probe co 2 s w cal() (samouzdrowienie). */
+#define MAX_FAIL_TRIP 10U
+#define MAX_REPROBE_MS 2000U
+static uint8_t s_fail_count = 0U;
+static uint32_t s_reprobe_tick = 0U;
+
+static void max_note(HAL_StatusTypeDef st)
+{
+    if (st == HAL_OK) {
+        s_fail_count = 0U;
+        return;
+    }
+    if (s_fail_count < 255U) ++s_fail_count;
+    if (s_fail_count >= MAX_FAIL_TRIP) {
+        max30102_zombie = 1;
+        s_reprobe_tick = HAL_GetTick();
+    }
+}
+
 uint8_t max30102_Detect(void)
 {
     if (HAL_I2C_IsDeviceReady(&hi2c2, MAX30102_ADDR_WRITE, 2, 5) == HAL_OK)
@@ -57,7 +79,7 @@ void max30102_init(void)
         status = HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_MODE_CONFIGURATION,
                                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
         if (status != HAL_OK) { max30102_zombie = 1; return; }
-        if (++rst_guard > 100) { max30102_zombie = 1; return; }
+        if (++rst_guard > 20) { max30102_zombie = 1; return; }
     } while (data & 0x40);
 
     /* New Data Interrupt */
@@ -104,10 +126,10 @@ uint8_t max30102_getUnreadSampleCount(void)
 
     uint8_t wr = 0, rd = 0;
 
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_FIFO_WRITE_POINTER,
-                     I2C_MEMADD_SIZE_8BIT, &wr, 1, 10);
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_FIFO_READ_POINTER,
-                     I2C_MEMADD_SIZE_8BIT, &rd, 1, 10);
+    max_note(HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_FIFO_WRITE_POINTER,
+                     I2C_MEMADD_SIZE_8BIT, &wr, 1, 10));
+    max_note(HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_FIFO_READ_POINTER,
+                     I2C_MEMADD_SIZE_8BIT, &rd, 1, 10));
 
     if ((wr - rd) < 0)
         return wr - rd + 32;
@@ -125,9 +147,9 @@ void max30102_getFIFO(SAMPLE *data, uint8_t sampleCount)
     if (sampleCount > 5)
         sampleCount = 5;
 
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_FIFO_DATA_REGISTER,
+    max_note(HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_FIFO_DATA_REGISTER,
                      I2C_MEMADD_SIZE_8BIT, dataTemp,
-                     6 * sampleCount, 25);
+                     6 * sampleCount, 25));
 
     for (i = 0; i < sampleCount; i++)
     {
@@ -147,12 +169,12 @@ uint8_t max30102_getStatus(void)
 
     uint8_t data = 0, dataTemp = 0;
 
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_INTERRUPT_STATUS_1,
-                     I2C_MEMADD_SIZE_8BIT, &dataTemp, 1, 10);
+    max_note(HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_INTERRUPT_STATUS_1,
+                     I2C_MEMADD_SIZE_8BIT, &dataTemp, 1, 10));
     data = dataTemp;
 
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_INTERRUPT_STATUS_2,
-                     I2C_MEMADD_SIZE_8BIT, &dataTemp, 1, 10);
+    max_note(HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_INTERRUPT_STATUS_2,
+                     I2C_MEMADD_SIZE_8BIT, &dataTemp, 1, 10));
 
     return data | dataTemp;
 }
@@ -226,7 +248,20 @@ int16_t eachSampleDiff = 0; // How different is it from the previous sample?
 
 void max30102_cal(void)
 {
-    if (max30102_zombie) return;
+    if (max30102_zombie) {
+        /* Re-probe co 2 s: jeden IsDeviceReady (do 10 ms), bez wiszenia.
+         * Jak czujnik wrocil: pelny re-init i jazda dalej, bez NRST. */
+        uint32_t now = HAL_GetTick();
+        if ((now - s_reprobe_tick) >= MAX_REPROBE_MS) {
+            s_reprobe_tick = now;
+            if (max30102_Detect()) {
+                max30102_zombie = 0;
+                s_fail_count = 0U;
+                max30102_init();
+            }
+        }
+        return;
+    }
 
     uint8_t unreadSampleCount = max30102_getUnreadSampleCount();
     /* Clamp do rozmiaru sampleBuffTemp (5 slotów): FIFO trzyma do 31
