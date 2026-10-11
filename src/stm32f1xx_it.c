@@ -37,6 +37,8 @@
 
 /* USER CODE BEGIN 0 */
 #include "max30102.h"
+#include "uart1.h"
+#include "uart2.h"
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
@@ -200,97 +202,23 @@ void I2C1_EV_IRQHandler(void)
   /* USER CODE END I2C1_EV_IRQn 1 */
 }
 
-#include "KY040.h"
-
-extern KY040_Handle_t encoder;
-extern volatile uint8_t current_page;
-extern volatile uint8_t page_changed;
-
-/****** 
-void EXTI3_IRQHandler(void)
-{
-    if (__HAL_GPIO_EXTI_GET_IT(GPIO_PIN_3) != RESET)
-    {
-        static uint32_t last_tick = 0;
-        uint32_t now = HAL_GetTick();
-
-        // PROSTY DEBOUNCE: ignoruj przerwania częściej niż co 2 ms
-        if ((now - last_tick) > 2) {
-            last_tick = now;
-
-            uint8_t clk = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_3) ? 1 : 0;
-            uint8_t dt  = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) ? 1 : 0;
-
-            KY040_SetState(&encoder, (clk << 1) | dt);
-            KY040_Direction_t dir = KY040_CheckRotation(&encoder);
-
-            if (dir == KY040_CLOCKWISE) {
-                current_page = (current_page == 0) ? 1 : 0;
-                page_changed = 1;
-            } else if (dir == KY040_COUNTERCLOCKWISE) {
-                current_page = (current_page == 1) ? 0 : 1;
-                page_changed = 1;
-            }
-        }
-
-        __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_3);
-    }
-}
-
-void EXTI4_IRQHandler(void)
-{
-    if (__HAL_GPIO_EXTI_GET_IT(GPIO_PIN_4) != RESET)
-    {
-        static uint32_t last_tick = 0;
-        uint32_t now = HAL_GetTick();
-
-        if ((now - last_tick) > 2) {
-            last_tick = now;
-
-            uint8_t clk = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_3) ? 1 : 0;
-            uint8_t dt  = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) ? 1 : 0;
-
-            KY040_SetState(&encoder, (clk << 1) | dt);
-            KY040_Direction_t dir = KY040_CheckRotation(&encoder);
-
-            if (dir == KY040_CLOCKWISE) {
-                current_page = (current_page == 0) ? 1 : 0;
-                page_changed = 1;
-            } else if (dir == KY040_COUNTERCLOCKWISE) {
-                current_page = (current_page == 1) ? 0 : 1;
-                page_changed = 1;
-            }
-        }
-
-        __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_4);
-    }
-}
-
+/**
+* @brief This function handles I2C1 error interrupt.
 */
-
-
-void EXTI9_5_IRQHandler(void)
+void I2C1_ER_IRQHandler(void)
 {
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_6);  // enkoder CLK na PA6
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_9);  // PB9 dla dcf77 na stm32 jednak my bierzemy z esp32 
+  HAL_I2C_ER_IRQHandler(&hi2c1);
 }
-
-void EXTI4_IRQHandler(void)
-{
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_4);
-}
-
 
 void USART1_IRQHandler(void)
 {
-    HAL_UART_IRQHandler(&huart1);
+    uart1_irq_handler();
 }
 
 
 void USART2_IRQHandler(void)
 {
-    // USART2 nieużywany — PA2/PA3 brak połączenia
-    // IRQ nie jest włączone w NVIC, handler dla bezpieczeństwa pusty
+    uart2_irq_handler();
 }
 
 

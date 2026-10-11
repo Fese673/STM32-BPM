@@ -1,36 +1,37 @@
 /**
  * ******************************************************************************
  * File Name          : uart1.c
- * Description        : UART1 TX-only driver (lock-free ring buffer, Cortex-M3)
- *                      PA9(TX) → ZEGAR GPIO16, 115200 baud, 50Hz PPG stream
- *                      PA10(RX) → ZEGAR GPIO17 (pull-up, receiver gated)
- *                      No __disable_irq() — uses volatile + M3 atomic 16-bit
+ * Description        : UART1 full-duplex driver.
+ *                      PA9(TX) -> ZEGAR GPIO16, 9600 baud
+ *                      PA10(RX) <- ZEGAR GPIO17
+ *
+ *                      TX: ring buffer + ISR (TXE).
+ *                      RX: ISR permanent (RXNEIE always on, no re-arm).
+ *
+ * Warstwa wyżej (frame_protocol.c) buduje ramki COBS+CRC16 i wywołuje
+ * uart1_write(). Tutaj jest tylko transport bajtowy — nic nie wie
+ * o protokole.
  * ******************************************************************************
  */
 
 #include "uart1.h"
-#include <stdio.h>
+#include "frame_protocol.h"
+#include "stm32f1xx_hal.h"
 #include <string.h>
 
 /* ============================================================================ */
-/* PRIVATE VARIABLES                                                            */
+/* TX RING BUFFER (ISR-safe)                                                   */
 /* ============================================================================ */
 
-#define UART1_TX_QUEUE_SIZE 1024U
-#define UART1_TX_QUEUE_MASK (UART1_TX_QUEUE_SIZE - 1U)
+#define TX_QUEUE_SIZE  1024U
+#define TX_QUEUE_MASK  (TX_QUEUE_SIZE - 1U)
 
-static uint8_t tx_queue[UART1_TX_QUEUE_SIZE];
-static volatile uint16_t tx_head;
-static volatile uint16_t tx_tail;
-static volatile uint16_t tx_active_length;
-static volatile uint8_t tx_busy;
-
-/* ============================================================================ */
-/* FORWARD DECLARATIONS                                                         */
-/* ============================================================================ */
+static uint8_t            tx_queue[TX_QUEUE_SIZE];
+static volatile uint16_t  tx_head;   /* write: main loop */
+static volatile uint16_t  tx_tail;   /* read : ISR       */
+static volatile uint8_t   tx_busy;   /* 1 = ISR currently sending */
 
 static void uart1_tx_kick(void);
-static void uart1_tx_complete_isr(void);
 
 /* ============================================================================ */
 /* PUBLIC API                                                                   */
@@ -38,215 +39,122 @@ static void uart1_tx_complete_isr(void);
 
 void uart1_init(void)
 {
-    tx_head = 0;
-    tx_tail = 0;
-    tx_active_length = 0;
-    tx_busy = 0;
+    tx_head  = 0;
+    tx_tail  = 0;
+    tx_busy  = 0;
 
-    // Gate USART1 receiver — disable RE to prevent noise on PA10 from
-    // generating overrun errors. Also clear CR3 EIE (error interrupt enable).
-    // TX path is unaffected (TE remains set from MX init).
+    /* Gate RX at boot – uart1_enable_rx() unlocks later. */
     USART1->CR1 &= ~(uint32_t)USART_CR1_RE;
     USART1->CR3 &= ~(uint32_t)USART_CR3_EIE;
-    // Flush any stale status flags
     (void)USART1->SR;
     (void)USART1->DR;
 }
 
-/**
- * @brief Send BPM and SpO2 values over UART1
- * 
- * Formats and sends vitals in format: "BPM:XXX,SPO2:XX\r\n"
- * Uses interrupt-driven transmission (non-blocking)
- * 
- * @param bpm Heart rate (0-255)
- * @param spo2 Blood oxygen saturation (0-100)
- */
-void uart1_send_vitals(uint8_t bpm, uint8_t spo2)
+void uart1_enable_rx(void)
 {
-    char tx_buffer[64];
-    int len = snprintf(tx_buffer, sizeof(tx_buffer), "BPM:%d,SPO2:%d\r\n", bpm, spo2);
-
-    if (len > 0 && len < (int)sizeof(tx_buffer)) {
-        (void)uart1_write((const uint8_t *)tx_buffer, (uint16_t)len);
-    }
-}
-
-void uart1_send_ppg_diff(int16_t diff)
-{
-    uint8_t frame[4];
-    frame[0] = 0xAA;
-    frame[1] = (uint8_t)(diff & 0xFF);
-    frame[2] = (uint8_t)((diff >> 8) & 0xFF);
-    frame[3] = 0x0A;
-    uart1_write(frame, 4);
+    if (USART1->CR1 & USART_CR1_RXNEIE) return;
+    (void)USART1->SR;
+    (void)USART1->DR;
+    /* Enable receiver + RXNE interrupt. RXNEIE stays on permanently:
+     * each byte triggers ISR -> DR -> frame_rx_on_byte -> no re-arm needed. */
+    USART1->CR1 |= USART_CR1_RE | USART_CR1_RXNEIE;
 }
 
 bool uart1_write(const uint8_t *data, uint16_t len)
 {
-    uint16_t copied = 0;
+    if (data == NULL || len == 0U) return true;
 
-    if (data == NULL || len == 0U) {
-        return true;
-    }
-
-    // Lock-free ring buffer push.
-    // Cortex-M3: volatile 16-bit reads/writes are atomic, no __disable_irq.
-    // Writer: data first → head second (strict ordering prevents ISR
-    // from reading stale data after head advances).
-    while (copied < len)
+    bool ok = false;
+    __disable_irq();
     {
-        uint16_t h = tx_head;
-        uint16_t nh = (uint16_t)(h + 1U);
-        if (nh >= UART1_TX_QUEUE_SIZE) {
-            nh = 0U;
+        uint16_t copied = 0;
+        while (copied < len) {
+            uint16_t h  = tx_head;
+            uint16_t nh = (uint16_t)(h + 1U);
+            if (nh >= TX_QUEUE_SIZE) nh = 0U;
+            if (nh == tx_tail) {
+                /* Ring pelny — zatrzymujemy sie, wyslemy to co sie zmiescilo. */
+                break;
+            }
+
+            tx_queue[h] = data[copied];
+            copied++;
+            __DMB();  /* Dane widoczne przed aktualizacja head. */
+            tx_head = nh;
         }
-
-        // Check buffer full (one slot sentinel).
-        // Reading tx_tail is a single 16-bit volatile load = atomic.
-        if (nh == tx_tail) {
-            break;
-        }
-
-        tx_queue[h] = data[copied];
-        copied++;
-
-        // Publish the byte: data must be visible before head advances.
-        // On M3, volatile stores are not reordered by the CPU.
-        // DSB not needed: ISR runs after this instruction completes.
-        tx_head = nh;
-    }
-
-    // If TX is idle and there is data to send, start the engine.
-    // Race: ISR might set tx_busy=0 and find head==tail between our
-    // check and kick. That's fine — tx_kick re-checks both.
-    if (tx_busy == 0U && tx_head != tx_tail)
-    {
+        ok = (copied == len);
         uart1_tx_kick();
     }
-
-    return (copied == len);
+    __enable_irq();
+    return ok;
 }
 
-/**
- * @brief Send raw string over UART1
- * 
- * Uses interrupt-driven transmission (non-blocking)
- * 
- * @param str Pointer to null-terminated string
- * @param len Length of string (without null terminator)
- */
 void uart1_send_string(const char *str, uint16_t len)
 {
-    if (str != NULL && len > 0) {
-        (void)uart1_write((const uint8_t *)str, len);
-    }
+    if (str && len > 0) (void)uart1_write((const uint8_t *)str, len);
 }
 
-/**
- * @brief Send single byte over UART1
- * 
- * Uses interrupt-driven transmission (non-blocking)
- * 
- * @param byte Byte to send
- */
 void uart1_send_byte(uint8_t byte)
 {
-    (void)uart1_write(&byte, 1);
+    (void)uart1_write(&byte, 1U);
 }
 
 /* ============================================================================ */
-/* PRIVATE HELPERS                                                              */
+/* TX ENGINE                                                                   */
 /* ============================================================================ */
 
-static void uart1_tx_kick(void)
+void uart1_tx_kick(void)
 {
-    uint16_t tail;
-    uint16_t head;
-    uint16_t chunk_length;
+    if (tx_busy) return;
+    if (tx_head == tx_tail) return;
+    tx_busy = 1;
+    USART1->CR1 |= USART_CR1_TXEIE;
+}
 
-    if (tx_busy != 0U || tx_head == tx_tail)
-    {
+/* ============================================================================ */
+/* ISR HANDLER – RXNE + TXE. RXNEIE stays on permanently (no re-arm).           */
+/* ============================================================================ */
+
+void uart1_irq_handler(void)
+{
+    uint32_t sr  = USART1->SR;
+
+    /* RXNE – highest priority: read byte into ring immediately.
+     * RXNEIE stays on – no re-arm. */
+    if (sr & USART_SR_RXNE) {
+        uint8_t byte = (uint8_t)USART1->DR;
+        frame_rx_on_byte(byte);
         return;
     }
 
-    tail = tx_tail;
-    head = tx_head;
-
-    if (head > tail)
-    {
-        chunk_length = (uint16_t)(head - tail);
-    }
-    else
-    {
-        chunk_length = (uint16_t)(UART1_TX_QUEUE_SIZE - tail);
+    /* ORE – clear so RX doesn't stall */
+    if (sr & USART_SR_ORE) {
+        (void)USART1->SR;
+        (void)USART1->DR;
+        return;
     }
 
-    tx_active_length = chunk_length;
-    tx_busy = 1U;
+    uint32_t cr1 = USART1->CR1;
 
-    if (HAL_UART_Transmit_IT(&huart1, &tx_queue[tail], chunk_length) != HAL_OK)
-    {
-        tx_busy = 0U;
-        tx_active_length = 0U;
+    /* TXE */
+    if ((cr1 & USART_CR1_TXEIE) && (sr & USART_SR_TXE)) {
+        if (tx_head != tx_tail) {
+            USART1->DR = tx_queue[tx_tail];
+            tx_tail = (uint16_t)((tx_tail + 1U) & TX_QUEUE_MASK);
+        } else {
+            USART1->CR1 &= ~(uint32_t)USART_CR1_TXEIE;
+            tx_busy = 0;
+            if (tx_head != tx_tail) {
+                tx_busy = 1;
+                USART1->CR1 |= USART_CR1_TXEIE;
+            }
+        }
+        return;
     }
-}
 
-static void uart1_tx_complete_isr(void)
-{
-    if (tx_active_length != 0U)
-    {
-        tx_tail = (uint16_t)((tx_tail + tx_active_length) % UART1_TX_QUEUE_SIZE);
-        tx_active_length = 0U;
-    }
-
-    tx_busy = 0U;
-    uart1_tx_kick();
-}
-
-/* ============================================================================ */
-/* INTERRUPT CALLBACKS (HAL)                                                    */
-/* ============================================================================ */
-
-/**
- * @brief UART1 RX Complete Callback
- * 
- * UART1 is TX-only. RX is disabled. No echo, no re-arm.
- */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    (void)huart;
-}
-
-/**
- * @brief UART1 TX Complete Callback (Optional)
- * 
- * Called by HAL when transmission is complete.
- * Useful for status tracking or LED indicators.
- */
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART1)
-    {
-        uart1_tx_complete_isr();
+    /* TC */
+    if ((cr1 & USART_CR1_TCIE) && (sr & USART_SR_TC)) {
+        USART1->CR1 &= ~(uint32_t)USART_CR1_TCIE;
+        return;
     }
 }
-
-/**
- * @brief UART1 Error Callback
- * 
- * Called by HAL if an error occurs (overrun, framing, etc.)
- * TX-only mode — just reset TX state.
- */
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART1)
-    {
-        tx_busy = 0U;
-        uart1_tx_kick();
-    }
-}
-
-/* ============================================================================ */
-/* END OF FILE                                                                  */
-/* ============================================================================ */

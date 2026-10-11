@@ -27,13 +27,17 @@
  * co pozwala zachować porządek i nie przeładowywać głównego main.c.
  */
 
-#include "oled.h"        // Wyświetlacz OLED SSD1306 (I2C1: PB6=SCL, PB7=SDA)
-#include "max30102.h"    // Czujnik tętna MAX30102   (I2C2: PB10=SCL, PB11=SDA)
-#include "KY040.h"       // Enkoder obrotowy KY-040  (CLK=PA6, DT=PA4)
-#include <stdio.h>       // Standardowe funkcje C (printf, sprintf itd.)                   
-                         // (często używane z UART-em oraz do formatowania tekstu)
-#include "uart1.h"  
-#include "debug/debug.h"
+#include "oled.h"        // Wyswietlacz OLED SSD1306 (I2C1: PB6=SCL, PB7=SDA)
+#include "max30102.h"    // Czujnik tetna MAX30102   (I2C2: PB10=SCL, PB11=SDA)
+#include <stdio.h>       // Standardowe funkcje C (printf, sprintf itd.)
+#include "uart1.h"
+#include "uart2.h"
+#include "frame_protocol.h"
+#include "ld2410_radar_wrapper.h"
+#include "frame_protocol.h"
+#include "pwm_reg.h"
+#include "brightness_handler.h"
+#include "silnik_krokowy/stepper_link.h"
 
 /* USER CODE END Includes */
 
@@ -42,22 +46,13 @@
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef  hi2c1;    // I2C1 dla OLED
 I2C_HandleTypeDef  hi2c2;    // I2C2 dla MAX30102
-TIM_HandleTypeDef  htim3;    // TIM3: PWM 2kHz dla buzzera na PB0 (CH3)
-UART_HandleTypeDef huart1;   // UART1 PA9/PA10 → ZEGAR ESP32 (PPG stream)
+TIM_HandleTypeDef  htim3;    // TIM3: buzzer PB0 (CH3) + jasnosc 7-seg PA6 (CH1)
+UART_HandleTypeDef huart1;   // UART1 PA9/PA10 -> ZEGAR ESP32 (ramki COBS, 9600)
+UART_HandleTypeDef huart2;   // UART2 PA2/PA3 -> radar LD2410 (256000)
 
 /* USER CODE BEGIN PV */
-// === ENKODER KY-040 ===
-KY040_Handle_t encoder;
-volatile uint8_t current_page = 0;   // 0=tętno, 1=zegar
-volatile uint8_t page_changed = 0;   // flaga zmiany strony
-
-// === ZEGAR (czas z ESP32) ===
-volatile uint8_t curHour    = 12;
-volatile uint8_t curMinute  = 0;
-volatile uint8_t time_valid = 0;     // 0=czekam, 1=czas odebrany (np. z ESP32)
-
-//  Flaga wysyłania BPM (tylko raz na pik)
-static uint8_t last_diff_state = 0;  // Pamiętaj poprzedni stan diff
+//  Flaga wysylania BPM (tylko raz na pik)
+static uint8_t last_diff_state = 0;  // Pamietaj poprzedni stan diff
 
 /* USER CODE END PV */
 
@@ -70,13 +65,13 @@ static void MX_I2C2_Init(void);
 static void MX_NVIC_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
+void MX_USART2_UART_Init(void);
+static void i2c_ctrl_poll(void);
 
 
 /* USER CODE BEGIN 0 */
-// USART1 (PA9/PA10): interrupt-driven TX, PPG binary stream → ZEGAR ESP32 GPIO16
-//   - 50Hz: 0xAA + int16_t diff + 0x0A (4B)
-//   - 1Hz:  "BPM:64,SPO2:97\r\n" (przy pulsie)
-// USART2 (PA2/PA3): nieużywany, brak połączenia, wyłączony.
+// USART1 (PA9/PA10) @ 9600: kanal ramek COBS+CRC16 <-> ZEGAR ESP32
+// USART2 (PA2/PA3) @ 256000: radar LD2410
 // CH340 niepodłączony — PA9 idzie bezpośrednio do ZEGAR GPIO16.
 /* USER CODE END 0 */
 
@@ -96,29 +91,36 @@ int main(void)
     MX_I2C1_Init();
     MX_I2C2_Init();
     MX_TIM3_Init();
+    PWM_Reg_Init();   // start TIM3_CH1 (PA6) — jasnosc 7-seg, domyslnie 0
+    PWM_State_Init(); // TIM2 heartbeat PC13 (1 s ON / 1 s OFF)
     MX_USART1_UART_Init();
-    // USART2 (PA2/PA3) — nieużywany, brak połączenia fizycznego
-    // MX_USART2_UART_Init();
+    MX_USART2_UART_Init();
     MX_NVIC_Init();
 
     /* USER CODE BEGIN 2 */
 
     HAL_Delay(200); // stabilizacja zasilania
 
-    // UART1 — PPG stream do ZEGAR ESP32 (PA9→GPIO16), TX-only
+    // UART1 — kanal ramek COBS do ZEGAR ESP32 (PA9/PA10, 9600 baud)
     uart1_init();
-    Debug_Init();
-    DEBUG_LOG_SECTION("DEBUG");
-    DEBUG_LOG_LINE("[BOOT] UART1 PPG stream ready (PA9 → ZEGAR GPIO16)");
-    DEBUG_LOG_LINE("[BOOT] I2C startup scan armed for +5000 ms");
-    Debug_QuickI2CProbe();
+    frame_protocol_init();
+    brightness_handler_init();   // ramka 0xB0 -> PWM_Reg_SetDuty
+    silnik_krokowy_init();       // ramka 0xB1 -> kolejka steppera
+    uart1_enable_rx();
 
-    // Inicjalizacja peryferiów użytkownika
-    OLED_Init();       // ekran
-    max30102_init();   // czujnik tętna
+    // Radar LD2410 na USART2 (PA2/PA3, 256000 baud)
+    ld2410_radar_init();
 
-    // Enkoder: CLK=PA6, DT=PA4
-    KY040_Init(&encoder, GPIOA, GPIO_PIN_6, GPIOA, GPIO_PIN_4);
+    oled_zombie     = OLED_Detect()     ? 0 : 1;
+    max30102_zombie = max30102_Detect() ? 0 : 1;
+
+    if (!oled_zombie) {
+        OLED_Init();       // ekran (non-blocking IT chain)
+    }
+
+    if (!max30102_zombie) {
+        max30102_init();   // czujnik tetna
+    }
 
     // Buzzer: start PWM na TIM3_CH3 (PB0)
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
@@ -126,131 +128,107 @@ int main(void)
 
     /* USER CODE END 2 */
 
-    /* Infinite loop */
+    /* Superloop: frame RX co iteracje, reszta z wlasnymi bramkami czasowymi.
+     * Dioda PC13 miga TYLKO z TIM2 (pwm_state) — nic w petli jej nie rusza. */
+    uint32_t last_i2c_ms = 0U;
     while (1)
     {
-        /* ========== BLOK 1: ENKODER - PRZEŁĄCZANIE STRON ========== */
-        KY040_Direction_t dir = KY040_GetRotation(&encoder);
+        frame_rx_process();          // ramki COBS z ZEGAR (nieblokujace)
 
-        if (dir == KY040_CLOCKWISE)
-        {
-            current_page++;
-            if (current_page > 1) current_page = 0;
-            page_changed = 1;
+        if ((HAL_GetTick() - last_i2c_ms) >= 20U) {
+            last_i2c_ms = HAL_GetTick();
+            i2c_ctrl_poll();         // OLED + MAX30102 co 20 ms
         }
-        else if (dir == KY040_COUNTERCLOCKWISE)
+
+        ld2410_radar_poll();         // radar (wewnetrzny throttle 50/500 ms)
+        stepper_poll();              // silnik (wewnetrzna bramka 1 ms)
+    }
+}
+
+/* Poll czujnikow co 20 ms (odpowiednik dawnego i2c_ctrl_task).
+ * OLED non-blocking: tylko wpisy do cache + watchdog/kick/recover. */
+static void i2c_ctrl_poll(void)
+{
+    OLED_WatchdogPoll();
+    if (OLED_GetError() && !oled_zombie) {
+        OLED_Recover();
+    } else if (!oled_zombie) {
+        OLED_Kick();
+    }
+
+    if (max30102_zombie)
+    {
+        /* Fallback bez czujnika: ekran ma zyc — myslniki, plaski
+         * przewijany wykres i napis. */
+        uint8_t d;
+        for (d = 0; d < 6; d++) OLED_showNum(d, 10);
+        OLED_drawChart(0.0f);
+        OLED_showHeart(1);
+        OLED_ShowString(0, 0, "BRAK CZUJNIKA ");
+    }
+    else
+    {
+        max30102_cal();
+        (void)max30102_getStatus();
+
+        uint8_t spo2      = max30102_getSpO2();
+        uint8_t heartReat = max30102_getHeartRate();
+        int16_t diff      = max30102_getDiff();
+
+        if (heartReat > 0)
         {
-            if (current_page == 0)
-                current_page = 1;
+            if (heartReat >= 100)
+                OLED_showNum(0, heartReat / 100);
             else
-                current_page--;
-            page_changed = 1;
+                OLED_showNum(0, 10);
+            OLED_showNum(1, (heartReat % 100) / 10);
+            OLED_showNum(2, heartReat % 10);
         }
-
-        /* ========== BLOK 2: ODŚWIEŻENIE EKRANU ========== */
-        if (page_changed)
+        else
         {
-            page_changed = 0;
-
-            if (current_page == 0)
-            {
-                // STRONA 0: MAX30102 (przywróć układ początkowy)
-                OLED_Init();
-            }
-            else
-            {
-                // STRONA 1: ZEGAR (czas z ESP32)
-                OLED_Clear();
-
-                uint8_t h10 = curHour / 10;
-                uint8_t h1  = curHour % 10;
-                uint8_t m10 = curMinute / 10;
-                uint8_t m1  = curMinute % 10;
-
-                OLED_showNumAt(37, h10);
-                OLED_showNumAt(51, h1);
-                OLED_ShowString(65, 4, ":");
-                OLED_showNumAt(75, m10);
-                OLED_showNumAt(89, m1);
-
-                // Status synchronizacji czasu
-                if (!time_valid) {
-                    OLED_ShowString(10, 0, "Czekam TIME...");
-                } else {
-                    OLED_ShowString(10, 0, "TIME OK");
-                }
-            }
+            OLED_showNum(0, 10);
+            OLED_showNum(1, 0);
+            OLED_showNum(2, 0);
         }
 
-        // Periodic debug hook: startup I2C scan after 5 seconds from power-up.
-        Debug_Process();
-
-        /* ========== BLOK 3: MAX30102 - POMIAR TĘTNA ========== */
-        if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_12) == GPIO_PIN_RESET)
+        if (spo2 > 0)
         {
-            HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);  // LED diagnostyczny
-            max30102_cal();
-
-            uint8_t spo2      = max30102_getSpO2();
-            uint8_t heartReat = max30102_getHeartRate();
-            int16_t diff      = max30102_getDiff();
-
-            // Wyświetlanie tylko na stronie 0
-            if (current_page == 0)
-            {
-                // Tętno (3 cyfry)
-                if (heartReat % 1000 / 100 > 0)
-                    OLED_showNum(0, heartReat % 1000 / 100);
-                else
-                    OLED_showNum(0, 10);  // spacja
-
-                OLED_showNum(1, heartReat % 100 / 10);
-                OLED_showNum(2, heartReat % 10);
-
-                // SpO2 (3 cyfry)
-                if (spo2 % 1000 / 100 > 0)
-                    OLED_showNum(3, spo2 % 1000 / 100);
-                else
-                    OLED_showNum(3, 10);  // spacja
-
-                OLED_showNum(4, spo2 % 100 / 10);
-                OLED_showNum(5, spo2 % 10);
-
-                // Wykres PPG
-                OLED_drawChart(diff);
-
-                // Ikona serca
-                if (diff > 50)
-                    OLED_showHeart(0);  // duże
-                else
-                    OLED_showHeart(1);  // małe
-            }
-
-            // Buzzer + oscyloskop (zawsze, niezależnie od strony) + wysyłanie przez uart 
-            if (diff > 50)
-            {
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
-                __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 250);  // 50% duty
-
-                  // WYSYŁAJ TYLKO GDY PULSUJE PO RAZ PIERWSZY
-                if (last_diff_state == 0)
-                {
-                    uart1_send_vitals(heartReat, spo2);  //  ( obie wartości)
-                    last_diff_state = 1;
-                }
-
-            }
+            if (spo2 >= 100)
+                OLED_showNum(3, 1);
             else
-            {
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
-                __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 0);
-
-                last_diff_state = 0;  //  RESET FLAGI - gotowy na następny pik
-            }
-
-            // PPG binary stream — po OLED i buzzrze, minimalny wpływ na timing I2C
-            uart1_send_ppg_diff(diff);
+                OLED_showNum(3, 10);
+            OLED_showNum(4, (spo2 % 100) / 10);
+            OLED_showNum(5, spo2 % 10);
         }
+        else
+        {
+            OLED_showNum(3, 10);
+            OLED_showNum(4, 0);
+            OLED_showNum(5, 0);
+        }
+
+        OLED_drawChart(diff);
+
+        if (diff > 50)
+            OLED_showHeart(0);
+        else
+            OLED_showHeart(1);
+
+        if (diff > 50) {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+            __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 250);
+
+            if (last_diff_state == 0) {
+                (void)frame_tx_bpm(heartReat, spo2);
+                last_diff_state = 1;
+            }
+        } else {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
+            __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, 0);
+            last_diff_state = 0;
+        }
+
+        (void)frame_tx_ppg(diff);
     }
 }
 
@@ -298,19 +276,22 @@ static void MX_NVIC_Init(void)
     HAL_NVIC_SetPriority(I2C1_EV_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
 
-    // UART1 – debug
+    // SysTick — bazowy tick HAL (najwyzszy priorytet)
+    HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
+
+    // I2C1 (OLED, lancuch IT + recovery z DeInit)
+    HAL_NVIC_SetPriority(I2C1_EV_IRQn, 1, 0);
+    HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
+    HAL_NVIC_SetPriority(I2C1_ER_IRQn, 1, 0);
+    HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
+
+    // UART1 — kanal ramek COBS do ZEGAR
     HAL_NVIC_SetPriority(USART1_IRQn, 2, 0);
     HAL_NVIC_EnableIRQ(USART1_IRQn);
 
-    // UART2 – nieużywany
-
-    // EXTI4 (PA4 - enkoder DT)
-    HAL_NVIC_SetPriority(EXTI4_IRQn, 3, 0);
-    HAL_NVIC_EnableIRQ(EXTI4_IRQn);
-
-    // EXTI9_5 (PA6 - enkoder CLK)
-    HAL_NVIC_SetPriority(EXTI9_5_IRQn, 3, 0);
-    HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+    // UART2 — radar LD2410
+    HAL_NVIC_SetPriority(USART2_IRQn, 2, 0);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
 }
 
 static void MX_TIM3_Init(void)
@@ -324,16 +305,23 @@ static void MX_TIM3_Init(void)
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_AFIO_CLK_ENABLE();
 
-    // PB0 = TIM3_CH3 (no remap)
+    // PB0 = TIM3_CH3 (buzzer, no remap)
     GPIO_InitStruct.Pin   = GPIO_PIN_0;
     GPIO_InitStruct.Mode  = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+    // PA6 = TIM3_CH1 (jasnosc wyswietlaczy 7-seg, no remap)
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    GPIO_InitStruct.Pin   = GPIO_PIN_6;
+    GPIO_InitStruct.Mode  = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
     htim3.Instance = TIM3;
-    htim3.Init.Prescaler         = 71;   // 72MHz/72 = 1MHz
+    htim3.Init.Prescaler         = 7;    // 72MHz/8 = 9MHz
     htim3.Init.CounterMode       = TIM_COUNTERMODE_UP;
-    htim3.Init.Period            = 499;  // 1MHz/500 = 2kHz
+    htim3.Init.Period            = 599;  // 9MHz/600 = 15kHz (wspolny dla CH1 i CH3)
     htim3.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
     htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
     if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
@@ -368,6 +356,11 @@ static void MX_TIM3_Init(void)
     {
         _Error_Handler(__FILE__, __LINE__);
     }
+
+    if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+    {
+        _Error_Handler(__FILE__, __LINE__);
+    }
 }
 
 static void MX_USART1_UART_Init(void)
@@ -376,7 +369,7 @@ static void MX_USART1_UART_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
     huart1.Instance        = USART1;
-    huart1.Init.BaudRate   = 115200;
+    huart1.Init.BaudRate   = 9600;
     huart1.Init.WordLength = UART_WORDLENGTH_8B;
     huart1.Init.StopBits   = UART_STOPBITS_1;
     huart1.Init.Parity     = UART_PARITY_NONE;
@@ -386,6 +379,37 @@ static void MX_USART1_UART_Init(void)
 
     if (HAL_UART_Init(&huart1) != HAL_OK)
     {
+        _Error_Handler(__FILE__, __LINE__);
+    }
+}
+
+void MX_USART2_UART_Init(void)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    __HAL_RCC_USART2_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+
+    GPIO_InitStruct.Pin       = GPIO_PIN_2;
+    GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin       = GPIO_PIN_3;
+    GPIO_InitStruct.Mode      = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull      = GPIO_PULLUP;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    huart2.Instance           = USART2;
+    huart2.Init.BaudRate      = 256000;
+    huart2.Init.WordLength    = UART_WORDLENGTH_8B;
+    huart2.Init.StopBits      = UART_STOPBITS_1;
+    huart2.Init.Parity        = UART_PARITY_NONE;
+    huart2.Init.Mode          = UART_MODE_TX_RX;
+    huart2.Init.HwFlowCtl     = UART_HWCONTROL_NONE;
+    huart2.Init.OverSampling  = UART_OVERSAMPLING_16;
+
+    if (HAL_UART_Init(&huart2) != HAL_OK) {
         _Error_Handler(__FILE__, __LINE__);
     }
 }
@@ -441,13 +465,7 @@ static void MX_GPIO_Init(void) // Konfiguracja wszystkich pinów GPIO
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
 
-    /* PA7 (LED testowy) */
-    GPIO_InitStruct.Pin   = GPIO_PIN_7;
-    GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    /* PC13 (LED diagnostyczny) */
+    /* PC13 (LED diagnostyczny — miga z TIM2, pwm_state) */
     GPIO_InitStruct.Pin   = GPIO_PIN_13;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
@@ -459,22 +477,14 @@ static void MX_GPIO_Init(void) // Konfiguracja wszystkich pinów GPIO
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    /* PB12 (MAX30102 INT) */
+    /* PB12 (MAX30102 INT — nieuzywany w pollingu, zostawiony jako wejscie) */
     GPIO_InitStruct.Pin  = GPIO_PIN_12;
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* Enkoder: PA6 (CLK), PA4 (DT) */
-    GPIO_InitStruct.Pin  = GPIO_PIN_6;
-    GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin  = GPIO_PIN_4;
-    GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    /* PA4/PA5/PA7/PA8 (silnik krokowy) — konfiguruje stepper_hw_init().
+     * PA6 (jasnosc 7-seg, TIM3_CH1) — konfiguruje MX_TIM3_Init(). */
 
     /* USART1: PA9 (TX), PA10 (RX) */
     GPIO_InitStruct.Pin   = GPIO_PIN_9;

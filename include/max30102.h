@@ -27,4 +27,10 @@ uint8_t max30102_getHeartRate();
 uint8_t max30102_getSpO2();
 int16_t max30102_getDiff();
 
+// Zombie mode: 0 = urządzenie wykryte, 1 = nie wykryte (inicjalizacja i odczyt pomijane)
+extern volatile uint8_t max30102_zombie;
+
+// Szybka detekcja urządzenia na I2C2 (0x57/0xAE). Zwraca 1 = OK, 0 = brak.
+uint8_t max30102_Detect(void);
+
 #endif

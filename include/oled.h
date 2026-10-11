@@ -1,9 +1,18 @@
 #ifndef __OLED_H
 #define __OLED_H
 
-// Adres I2C wyświetlacza OLED SSD1306 (7-bit shifted: 0x3C << 1 = 0x78)
-// Niektóre moduły używają 0x78, inne 0x7A - zależy od stanu pinu SA0
-#define OLED_ADDR 0x78
+// SSD1306 na magistrali I2C1. HAL przyjmuje adres w formacie 8-bitowym
+// (7-bitowe adresy, bit R/W w bit0): 0x3C(SA0=LOW) = 0x78, 0x3D(SA0=HIGH) = 0x7A.
+//
+// oled_addr to JEDYNE źródło prawdy o adresie — ustawia go OLED_Detect()
+// na pierwszy adres z listy kandydatów, który odpowiedział ACK. Caly
+// sterownik (init, zapisy komend, łańcuch odświeżania) używa tej zmiennej,
+// więc adres fizyczny modułu nie jest wpisany nigdzie sztywno.
+extern volatile uint8_t oled_addr;
+
+// Liczba i lista kandydatów do detekcji: 0x3C (SA0=LOW) = 0x78, 0x3D (SA0=HIGH) = 0x7A.
+#define OLED_ADDR_CANDIDATES_COUNT  2U
+extern const uint8_t oled_addr_candidates[OLED_ADDR_CANDIDATES_COUNT];
 
 // Tryby zapisu do kontrolera SSD1306
 #define OLED_CMD 0  // Zapis komendy konfiguracyjnej (Co=0, DC=0)
@@ -74,6 +83,23 @@ void OLED_showNumAt(uint8_t x_start, uint8_t num);
 // Rysowanie wykresu fali PPG (oscylogram tętna)
 // value: amplituda sygnału (różnica max30102_getDiff())
 void OLED_drawChart(float value);
+
+uint8_t OLED_GetError(void);
+void OLED_ClearError(void);
+// Watchdog łańcucha odświeżania (nieblokujący, do wołania co cykl taska).
+// Wykrywa skleszczony łańcuch bez flagi błędu i wymusza recovery.
+void OLED_WatchdogPoll(void);
+void OLED_Kick(void);
+// Nieblokujący recovery (maszyna stanów na kilka cykli taska, bez HAL_Delay).
+// Wołany w każdym cyklu taska dopóki OLED_GetError() != 0.
+void OLED_Recover(void);
+
+// Zombie mode: 0 = urządzenie wykryte, 1 = nie wykryte (inicjalizacja i zapis pomijane)
+extern volatile uint8_t oled_zombie;
+
+// Szybka detekcja urządzenia na I2C1 (próbuje 0x78 i 0x7A).
+// Ustawia oled_addr na działający adres. Zwraca 1 = OK, 0 = brak.
+uint8_t OLED_Detect(void);
 
 
 #endif

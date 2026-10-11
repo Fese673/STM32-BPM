@@ -1,0 +1,570 @@
+// Native host-side unit test for ld2410::parse_data_frame_().
+// Feeds known-good frames (from the HLK-LD2410C V1.00 protocol document
+// in docs/HLK-LD2410C_protocol.md) through the public read() API via a
+// mock Stream, and asserts that the resulting field values match the
+// protocol specification.
+//
+// Build & run:  bash tests/run.sh   (from the repo root)
+//
+// On the host ESP32 is not defined, so the FreeRTOS task path and the
+// portMUX critical sections are compiled out. The test exercises only
+// the parser, which is the surface this branch actually changed.
+
+#include <Arduino.h>
+#include <ld2410.h>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+#include <cassert>
+#include <initializer_list>
+
+// Mock UART. Two modes:
+//   1. inject(...)            -- bytes are available IMMEDIATELY (used by
+//                                data-frame tests that don't care about
+//                                command/response ordering).
+//   2. inject_response(...)   -- bytes are STAGED and released only when the
+//                                test code observes the radar protocol
+//                                postamble (0x04 0x03 0x02 0x01) being
+//                                written to the UART. This models the real
+//                                radar, which only emits an ACK after it
+//                                has received a complete command.
+class MockSerial : public Stream {
+    std::vector<uint8_t> q_;          // bytes available for read()
+    size_t pos_ = 0;
+    std::vector<std::vector<uint8_t>> response_queue_;  // staged responses
+    uint8_t last4_[4] = {0};
+    int write_count_ = 0;
+public:
+    void inject(std::initializer_list<uint8_t> bytes) {
+        q_.insert(q_.end(), bytes.begin(), bytes.end());
+    }
+    void inject(const std::vector<uint8_t>& bytes) {
+        q_.insert(q_.end(), bytes.begin(), bytes.end());
+    }
+    void inject_response(const std::vector<uint8_t>& bytes) {
+        response_queue_.push_back(bytes);
+    }
+    int available() override { return (int)(q_.size() - pos_); }
+    int read() override {
+        if (pos_ >= q_.size()) return -1;
+        return q_[pos_++];
+    }
+    size_t write(uint8_t b) override {
+        last4_[write_count_ % 4] = b;
+        write_count_++;
+        if (write_count_ >= 4) {
+            // Recover the chronological order of the last 4 writes.
+            uint8_t b0 = last4_[(write_count_ - 4) % 4];
+            uint8_t b1 = last4_[(write_count_ - 3) % 4];
+            uint8_t b2 = last4_[(write_count_ - 2) % 4];
+            uint8_t b3 = last4_[(write_count_ - 1) % 4];
+            if (b0 == 0x04 && b1 == 0x03 && b2 == 0x02 && b3 == 0x01) {
+                if (!response_queue_.empty()) {
+                    const auto& resp = response_queue_.front();
+                    q_.insert(q_.end(), resp.begin(), resp.end());
+                    response_queue_.erase(response_queue_.begin());
+                }
+            }
+        }
+        return 1;
+    }
+    using Print::write;  // pull in the size_t write(const uint8_t*, size_t) overload
+    void clear() {
+        q_.clear(); pos_ = 0;
+        response_queue_.clear();
+        write_count_ = 0;
+    }
+};
+
+static int failures = 0;
+
+#define CHECK(cond) do { \
+    if (!(cond)) { \
+        std::fprintf(stderr, "FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); \
+        failures++; \
+    } \
+} while (0)
+
+#define CHECK_EQ(a, b) do { \
+    auto _a = (a); auto _b = (b); \
+    if (!(_a == _b)) { \
+        std::fprintf(stderr, "FAIL %s:%d  %s == %s : got %lld vs %lld\n", \
+                     __FILE__, __LINE__, #a, #b, (long long)_a, (long long)_b); \
+        failures++; \
+    } \
+} while (0)
+
+// Helper: pump the parser by calling read() until all queued bytes are drained.
+static void drain(ld2410& r, MockSerial& s) {
+    while (s.available() > 0) {
+        r.read();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: basic frame from protocol §2.3.2 (Table 12 example).
+//   F4 F3 F2 F1 | 0D 00 | 02 AA 02 51 00 00 00 00 3B 00 00 55 00 | F8 F7 F6 F5
+// Decoded:
+//   data_type=0x02 (basic), target_status=0x02,
+//   moving distance=0x0051=81 cm, moving energy=0,
+//   stationary distance=0, stationary energy=0x3B=59,
+//   detection distance=0
+// ---------------------------------------------------------------------------
+static void test_basic_frame() {
+    std::printf("test_basic_frame ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+    s.inject({
+        0xF4, 0xF3, 0xF2, 0xF1,             // header
+        0x0D, 0x00,                         // intra-frame data length = 13
+        0x02, 0xAA,                         // data_type basic, head 0xAA
+        0x02,                               // target status
+        0x51, 0x00,                         // moving distance LE = 81
+        0x00,                               // moving energy
+        0x00, 0x00,                         // stationary distance = 0
+        0x3B,                               // stationary energy = 59
+        0x00, 0x00,                         // detection distance = 0
+        0x55, 0x00,                         // tail + calibration
+        0xF8, 0xF7, 0xF6, 0xF5              // footer
+    });
+    drain(r, s);
+
+    CHECK(r.presenceDetected());                     // target_status != 0
+    CHECK(!r.movingTargetDetected());                // moving energy 0 -> not detected
+    // Note: r.stationaryTargetDetected() is intentionally NOT asserted.
+    // The doc's contrived basic-frame example has stationary_distance=0,
+    // and the helper requires both distance > 0 and energy > 0. Parser is
+    // correct; the doc example is just synthetic. We assert raw fields.
+    CHECK_EQ((int)r.movingTargetDistance(), 81);
+    CHECK_EQ((int)r.movingTargetEnergy(), 0);
+    CHECK_EQ((int)r.stationaryTargetDistance(), 0);
+    CHECK_EQ((int)r.stationaryTargetEnergy(), 59);
+    CHECK_EQ((int)r.detectionDistance(), 0);
+    CHECK(!r.engineeringRetrieved());                // no eng frame yet
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: engineering frame from protocol §2.3.2 (Table 14 example).
+//   F4 F3 F2 F1 | 23 00 | 01 AA 03 1E 00 3C 00 00 39 00 00
+//                          08 08
+//                          3C 22 05 03 03 04 03 06 05
+//                          00 00 39 10 13 06 06 08 04
+//                          03 05    (retain bytes)
+//                          55 00 |
+//   F8 F7 F6 F5
+// Decoded: target_status=0x03, moving=30 cm @ 60, stationary=0 @ 57,
+//   detection=0; per-gate motion energies = [60, 34, 5, 3, 3, 4, 3, 6, 5];
+//   per-gate stationary energies = [0, 0, 57, 16, 19, 6, 6, 8, 4].
+// Pre-fix: the strict 0x02 check rejected this frame and the buffer-size
+// guard (LD2410_MAX_FRAME_LENGTH=40) would have dropped it before parsing.
+// ---------------------------------------------------------------------------
+static void test_engineering_frame() {
+    std::printf("test_engineering_frame ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+    s.inject({
+        0xF4, 0xF3, 0xF2, 0xF1,
+        0x23, 0x00,                                // intra length = 35
+        0x01, 0xAA,                                // engineering, head
+        0x03,                                      // target status: both
+        0x1E, 0x00,                                // moving dist = 30
+        0x3C,                                      // moving energy = 60
+        0x00, 0x00,                                // stationary dist = 0
+        0x39,                                      // stationary energy = 57
+        0x00, 0x00,                                // detection dist = 0
+        0x08, 0x08,                                // max moving N=8, max stationary N=8
+        0x3C, 0x22, 0x05, 0x03, 0x03, 0x04, 0x03, 0x06, 0x05,  // motion gate 0..8
+        0x00, 0x00, 0x39, 0x10, 0x13, 0x06, 0x06, 0x08, 0x04,  // stationary gate 0..8
+        0x03, 0x05,                                // retain (M=2)
+        0x55, 0x00,                                // tail + cal at idx 39, 40
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    drain(r, s);
+
+    CHECK_EQ((int)r.movingTargetDistance(), 30);
+    CHECK_EQ((int)r.movingTargetEnergy(), 60);
+    CHECK_EQ((int)r.stationaryTargetDistance(), 0);
+    CHECK_EQ((int)r.stationaryTargetEnergy(), 57);
+    CHECK_EQ((int)r.detectionDistance(), 0);
+
+    // Per-gate energies: this is the new surface that pre-fix did not exist.
+    int expected_motion[9]     = {60, 34,  5,  3,  3,  4,  3,  6,  5};
+    int expected_stationary[9] = { 0,  0, 57, 16, 19,  6,  6,  8,  4};
+    for (uint8_t g = 0; g < 9; g++) {
+        CHECK_EQ((int)r.movingEnergyAtGate(g), expected_motion[g]);
+        CHECK_EQ((int)r.stationaryEnergyAtGate(g), expected_stationary[g]);
+    }
+    // Out-of-range gate index must return 0, not out-of-bounds-read.
+    CHECK_EQ((int)r.movingEnergyAtGate(9), 0);
+    CHECK_EQ((int)r.stationaryEnergyAtGate(255), 0);
+
+    CHECK(r.engineeringRetrieved());
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: malformed frame (bad data_type) must be rejected.
+// Same length as a basic frame but data_type = 0x99 (neither 0x01 nor 0x02).
+// ---------------------------------------------------------------------------
+static void test_invalid_data_type() {
+    std::printf("test_invalid_data_type ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+    s.inject({
+        0xF4, 0xF3, 0xF2, 0xF1,
+        0x0D, 0x00,
+        0x99, 0xAA,                                // INVALID data_type
+        0x02, 0x51, 0x00, 0x00, 0x00, 0x00, 0x3B, 0x00, 0x00,
+        0x55, 0x00,
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    drain(r, s);
+
+    // Fields must remain at their initial zero values - no spurious update.
+    CHECK_EQ((int)r.movingTargetDistance(), 0);
+    CHECK_EQ((int)r.stationaryTargetEnergy(), 0);
+    CHECK_EQ((int)r.detectionDistance(), 0);
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: bad trailer byte must be rejected (anchor on dynamic position).
+// Use a basic frame but corrupt the 0x55 tail.
+// ---------------------------------------------------------------------------
+static void test_invalid_trailer() {
+    std::printf("test_invalid_trailer ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+    s.inject({
+        0xF4, 0xF3, 0xF2, 0xF1,
+        0x0D, 0x00,
+        0x02, 0xAA,
+        0x02, 0x51, 0x00, 0x00, 0x00, 0x00, 0x3B, 0x00, 0x00,
+        0x77, 0x00,                                // bogus tail (must be 0x55 0x00)
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    drain(r, s);
+
+    CHECK_EQ((int)r.movingTargetDistance(), 0);    // not updated
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: two consecutive frames - basic then engineering - should reuse
+// the same library instance correctly and reflect the latest values.
+// ---------------------------------------------------------------------------
+static void test_sequential_frames() {
+    std::printf("test_sequential_frames ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+
+    // First: a basic frame with moving distance 100 cm
+    s.inject({
+        0xF4, 0xF3, 0xF2, 0xF1, 0x0D, 0x00,
+        0x02, 0xAA, 0x01, 0x64, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x55, 0x00,
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    drain(r, s);
+    CHECK_EQ((int)r.movingTargetDistance(), 100);
+    CHECK_EQ((int)r.movingTargetEnergy(), 50);
+    CHECK(!r.engineeringRetrieved());
+
+    // Then: engineering frame, moving distance 200, gate 5 motion energy 42
+    s.inject({
+        0xF4, 0xF3, 0xF2, 0xF1, 0x23, 0x00,
+        0x01, 0xAA, 0x01,
+        0xC8, 0x00,                                // moving dist = 200
+        0x14,                                      // moving energy = 20
+        0x00, 0x00, 0x00, 0x00, 0x00,              // stationary + detection
+        0x08, 0x08,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x00,  // gate 5 motion = 0x2A=42
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+        0x55, 0x00,
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    drain(r, s);
+    CHECK_EQ((int)r.movingTargetDistance(), 200);
+    CHECK_EQ((int)r.movingTargetEnergy(), 20);
+    CHECK_EQ((int)r.movingEnergyAtGate(5), 42);
+    CHECK(r.engineeringRetrieved());
+    std::printf("ok\n");
+}
+
+// ===========================================================================
+// Command-side tests (added by refactor/task-safe-commands).
+// These exercise the wait_for_ack_ + cmd_seq_ machinery via the public
+// request* API. Hardware is not available; we simulate the radar's ACK by
+// pre-loading the MockSerial with the bytes the real radar would send.
+//
+// On the host autoReadTask is not active (no FreeRTOS available), so all
+// commands take the polling branch of wait_for_ack_, which drains UART ->
+// circular buffer -> read_frame_() -> parse_command_frame_() inline.
+// ===========================================================================
+
+// Build a 0xA0 (firmware version) ACK frame with major=1, minor=7, bugfix=0x22091516.
+static std::vector<uint8_t> make_firmware_ack(uint8_t major, uint8_t minor,
+                                              uint8_t b0, uint8_t b1, uint8_t b2, uint8_t b3) {
+    return {
+        0xFD, 0xFC, 0xFB, 0xFA,   // header
+        0x0C, 0x00,               // intra-frame data length = 12
+        0xA0, 0x01,               // command word ACK = 0xA0 | 0x0100 -> LE A0 01
+        0x00, 0x00,               // ACK status: success
+        0x01, 0x00,               // firmware type = 0x0001 LE
+        minor, major,             // bytes 12, 13: minor then major (per parse_command_frame_)
+        b0, b1, b2, b3,           // bugfix uint32 LE
+        0x04, 0x03, 0x02, 0x01    // footer
+    };
+}
+
+// Build a generic short ACK (4-byte payload, status=success) for opcode `op`.
+// Used by enter_configuration_mode_'s ACK (0xFF) and most other commands.
+static std::vector<uint8_t> make_short_ack(uint8_t op, uint16_t intra_len = 4) {
+    std::vector<uint8_t> v = {
+        0xFD, 0xFC, 0xFB, 0xFA,
+        (uint8_t)(intra_len & 0xFF), (uint8_t)((intra_len >> 8) & 0xFF),
+        op, 0x01,                // command word ACK
+        0x00, 0x00               // status: success
+    };
+    // Pad with zero bytes if the caller asked for a longer intra_len so
+    // length matches what the radar would actually send for some commands.
+    for (uint16_t i = 4; i < intra_len; i++) v.push_back(0x00);
+    v.push_back(0x04); v.push_back(0x03); v.push_back(0x02); v.push_back(0x01);
+    return v;
+}
+
+// Test: requestFirmwareVersion full flow.
+// Inject ACKs in the order the real radar would send: enter-config (0xFF),
+// firmware-version (0xA0), leave-config (0xFE). All three must succeed and
+// firmware_*_version fields must be populated.
+static void test_command_ack_polling() {
+    std::printf("test_command_ack_polling ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+
+    // enter_configuration_mode_ -> ACK 0xFF with 8-byte payload (status + version + buffer)
+    // Stage three responses: each is released when the radar postamble is
+    // written (i.e. immediately after the corresponding command bytes go out).
+    s.inject_response(make_short_ack(0xFF, 8));
+    s.inject_response(make_firmware_ack(1, 7, 0x16, 0x15, 0x09, 0x22));
+    s.inject_response(make_short_ack(0xFE, 4));
+
+    bool ok = r.requestFirmwareVersion();
+    CHECK(ok);
+    CHECK_EQ((int)r.firmware_major_version, 1);
+    CHECK_EQ((int)r.firmware_minor_version, 7);
+    CHECK_EQ((unsigned long)r.firmware_bugfix_version, 0x22091516UL);
+    CHECK(!r.isAutoReadTaskRunning());
+    std::printf("ok\n");
+}
+
+// Test: ACK with wrong opcode -> command must time out, returns false.
+// Inject only enter-config ACK; the firmware command then receives no
+// matching ACK and wait_for_ack_ should give up at radar_uart_command_timeout_.
+static void test_command_ack_stale() {
+    std::printf("test_command_ack_stale ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+    // Only enter-config ACK; nothing for the actual command. wait_for_ack_
+    // for 0xA0 will time out (radar_uart_command_timeout_ = 100 ms).
+    s.inject_response(make_short_ack(0xFF, 8));
+
+    // requestFirmwareVersion will: enter (ok), send 0xA0, then wait for 0xA0
+    // ACK that never arrives. Should return false.
+    bool ok = r.requestFirmwareVersion();
+    CHECK(!ok);
+    std::printf("ok\n");
+}
+
+// Test: two requestFirmwareVersion calls back-to-back. The cmd_seq_ counter
+// must invalidate any leftover ACK state from call #1 so call #2 doesn't
+// short-circuit on the previous response. We also vary the firmware bytes
+// between the two calls to confirm the second value is what we read.
+static void test_command_seq() {
+    std::printf("test_command_seq ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+
+    // Call #1: major=1, minor=7
+    s.inject_response(make_short_ack(0xFF, 8));
+    s.inject_response(make_firmware_ack(1, 7, 0x16, 0x15, 0x09, 0x22));
+    s.inject_response(make_short_ack(0xFE, 4));
+    CHECK(r.requestFirmwareVersion());
+    CHECK_EQ((int)r.firmware_major_version, 1);
+
+    // Call #2: major=2, minor=10. Different bytes prove we are reading
+    // the SECOND ACK not a residual from the first.
+    s.inject_response(make_short_ack(0xFF, 8));
+    s.inject_response(make_firmware_ack(2, 10, 0x01, 0x02, 0x03, 0x04));
+    s.inject_response(make_short_ack(0xFE, 4));
+    CHECK(r.requestFirmwareVersion());
+    CHECK_EQ((int)r.firmware_major_version, 2);
+    CHECK_EQ((int)r.firmware_minor_version, 10);
+    CHECK_EQ((unsigned long)r.firmware_bugfix_version, 0x04030201UL);
+    std::printf("ok\n");
+}
+
+// Test: completely silent UART -> command must time out cleanly (no
+// infinite loop, no field corruption).
+static void test_command_no_ack() {
+    std::printf("test_command_no_ack ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, /*waitForRadar=*/false);
+    // s is empty: no ACK at all.
+    bool ok = r.requestFirmwareVersion();
+    CHECK(!ok);
+    // Fields must remain at their initial zero values.
+    CHECK_EQ((int)r.firmware_major_version, 0);
+    CHECK_EQ((int)r.firmware_minor_version, 0);
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: a lone 0xF4 followed by non-magic bytes must NOT commit to a
+// frame. Pre-fix, the parser captured any 0xF4 as a frame start; if the
+// next bytes happened to look like a length+payload, fields could be
+// mis-populated. Post-fix, all four header bytes are validated.
+// ---------------------------------------------------------------------------
+static void test_lone_F4_not_a_header() {
+    std::printf("test_lone_F4_not_a_header ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, false);
+    s.inject({
+        // Lone 0xF4 + three non-magic bytes, then a real frame.
+        0xF4, 0x12, 0x34, 0x56,
+        0xF4, 0xF3, 0xF2, 0xF1,
+        0x0D, 0x00,
+        0x02, 0xAA,
+        0x02, 0x51, 0x00, 0x00, 0x00, 0x00, 0x3B, 0x00, 0x00,
+        0x55, 0x00,
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    drain(r, s);
+    CHECK_EQ((int)r.movingTargetDistance(), 81);
+    CHECK_EQ((int)r.stationaryTargetEnergy(), 59);
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: when a partial header is broken by 0xF4 itself (e.g. radar emits
+// F4 F3 F2 then a stray F4), the parser must reuse the F4 as a fresh
+// position-0, not drop it. This exercises the resync branch where the
+// offending byte is itself a candidate header.
+// ---------------------------------------------------------------------------
+static void test_resync_F4_at_wrong_position() {
+    std::printf("test_resync_F4_at_wrong_position ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, false);
+    s.inject({
+        0xF4, 0xF3, 0xF2,                 // partial header, missing F1
+        0xF4, 0xF3, 0xF2, 0xF1,           // real header (the F4 here is the resync)
+        0x0D, 0x00,
+        0x02, 0xAA,
+        0x02, 0x51, 0x00, 0x00, 0x00, 0x00, 0x3B, 0x00, 0x00,
+        0x55, 0x00,
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    drain(r, s);
+    CHECK_EQ((int)r.movingTargetDistance(), 81);
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 12: the payload contains the data-frame footer pattern F8 F7 F6 F5
+// in the middle. Pre-fix, the parser called check_frame_end_() after every
+// byte from position 8 onwards and would terminate early when these four
+// bytes appeared in payload, then reject the frame for length mismatch and
+// lose alignment. Post-fix, the footer is only checked at the position
+// dictated by the length field.
+// ---------------------------------------------------------------------------
+static void test_no_early_termination_on_payload_footer() {
+    std::printf("test_no_early_termination_on_payload_footer ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, false);
+    s.inject({
+        0xF4, 0xF3, 0xF2, 0xF1,
+        0x0D, 0x00,
+        0x02, 0xAA,
+        0x02,                             // target status
+        0xF8, 0xF7,                       // moving distance LE = 0xF7F8 (intra bytes 3..4)
+        0xF6,                             // moving energy = F6 (intra byte 5; getter clamps to 100)
+        0xF5, 0x00,                       // stationary distance LE = 0x00F5
+        0x00,                             // stationary energy
+        0x42, 0x00,                       // detection distance = 0x0042 = 66 (sentinel)
+        0x55, 0x00,
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    // With the old parser, intra-bytes [F8 F7 F6 F5] at positions 9..12 of the
+    // accumulated frame would trigger the per-byte footer check at position 13
+    // and terminate the frame early; parse_data_frame_ would reject and the
+    // detection_distance field (the last field, written only at full parse)
+    // would stay at 0. The sentinel 66 above proves the new parser walked all
+    // 23 bytes before validating the footer.
+    drain(r, s);
+    CHECK_EQ((int)r.movingTargetDistance(), 0xF7F8);
+    CHECK_EQ((int)r.stationaryTargetDistance(), 0x00F5);
+    CHECK_EQ((int)r.detectionDistance(), 66);
+    std::printf("ok\n");
+}
+
+// ---------------------------------------------------------------------------
+// Test 13: a bogus length field rejects the frame and the parser resyncs in
+// time to capture the next valid frame.
+// ---------------------------------------------------------------------------
+static void test_resync_after_bogus_length() {
+    std::printf("test_resync_after_bogus_length ... ");
+    ld2410 r;
+    MockSerial s;
+    r.begin(s, false);
+    s.inject({
+        0xF4, 0xF3, 0xF2, 0xF1,
+        0xFF, 0xFF,                       // intra length 65535 > LD2410_MAX_FRAME_LENGTH
+        // Parser must drop and look for a fresh header in the bytes that follow.
+        0xF4, 0xF3, 0xF2, 0xF1,
+        0x0D, 0x00,
+        0x02, 0xAA,
+        0x02, 0x51, 0x00, 0x00, 0x00, 0x00, 0x3B, 0x00, 0x00,
+        0x55, 0x00,
+        0xF8, 0xF7, 0xF6, 0xF5
+    });
+    drain(r, s);
+    CHECK_EQ((int)r.movingTargetDistance(), 81);
+    std::printf("ok\n");
+}
+
+int main() {
+    test_basic_frame();
+    test_engineering_frame();
+    test_invalid_data_type();
+    test_invalid_trailer();
+    test_sequential_frames();
+    test_command_ack_polling();
+    test_command_ack_stale();
+    test_command_seq();
+    test_command_no_ack();
+    test_lone_F4_not_a_header();
+    test_resync_F4_at_wrong_position();
+    test_no_early_termination_on_payload_footer();
+    test_resync_after_bogus_length();
+
+    if (failures == 0) {
+        std::printf("\nALL TESTS PASS\n");
+        return 0;
+    }
+    std::printf("\n%d FAILURE(S)\n", failures);
+    return 1;
+}

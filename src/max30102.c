@@ -29,18 +29,35 @@
 
 extern I2C_HandleTypeDef hi2c2;
 
+volatile uint8_t max30102_zombie = 0;
+
+uint8_t max30102_Detect(void)
+{
+    if (HAL_I2C_IsDeviceReady(&hi2c2, MAX30102_ADDR_WRITE, 2, 5) == HAL_OK)
+        return 1;
+    return 0;
+}
+
 void max30102_init(void)
 {
+    if (max30102_zombie) return;
+
     uint8_t data = 0;
+    HAL_StatusTypeDef status;
 
     /* reset */
     data = 0x40;
-    HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_MODE_CONFIGURATION,
-                      I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
+    status = HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_MODE_CONFIGURATION,
+                               I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
+    if (status != HAL_OK) { max30102_zombie = 1; return; }
+
+    uint8_t rst_guard = 0;
     do
     {
-        HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_MODE_CONFIGURATION,
-                         I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
+        status = HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_MODE_CONFIGURATION,
+                                  I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
+        if (status != HAL_OK) { max30102_zombie = 1; return; }
+        if (++rst_guard > 100) { max30102_zombie = 1; return; }
     } while (data & 0x40);
 
     /* New Data Interrupt */
@@ -100,6 +117,8 @@ void max30102_init(void)
 
 uint8_t max30102_getUnreadSampleCount(void)
 {
+    if (max30102_zombie) return 0;
+
     uint8_t wr = 0, rd = 0;
 
     HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_FIFO_WRITE_POINTER,
@@ -115,6 +134,8 @@ uint8_t max30102_getUnreadSampleCount(void)
 
 void max30102_getFIFO(SAMPLE *data, uint8_t sampleCount)
 {
+    if (max30102_zombie) return;
+
     uint8_t dataTemp[5 * 6];
     uint8_t i;
 
@@ -139,6 +160,8 @@ void max30102_getFIFO(SAMPLE *data, uint8_t sampleCount)
 
 uint8_t max30102_getStatus(void)
 {
+    if (max30102_zombie) return 0;
+
     uint8_t data = 0, dataTemp = 0;
 
     HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_INTERRUPT_STATUS_1,
@@ -176,6 +199,8 @@ float max30102_getTemperature(void)
 
 void max30102_OFF(void)
 {
+    if (max30102_zombie) return;
+
     uint8_t data = 0;
 
     HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_MODE_CONFIGURATION,
@@ -187,6 +212,8 @@ void max30102_OFF(void)
 
 void max30102_ON(void)
 {
+    if (max30102_zombie) return;
+
     uint8_t data = 0;
 
     HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_MODE_CONFIGURATION,
@@ -267,7 +294,14 @@ int16_t eachSampleDiff = 0; // How different is it from the previous sample?
 
 void max30102_cal(void)
 {
+    if (max30102_zombie) return;
+
     uint8_t unreadSampleCount = max30102_getUnreadSampleCount();
+    /* Clamp do rozmiaru sampleBuffTemp (5 slotów): FIFO trzyma do 31
+     * nieprzeczytanych próbek (backlog po dotknięciu palcem / jitterze),
+     * a pętla niżej czyta i filtruje sampleBuffTemp[i] — bez tego OOB
+     * read + OOB write przez filter() rozwalał stos taska i wieszał OLED. */
+    if (unreadSampleCount > 5) unreadSampleCount = 5;
     SAMPLE  sampleBuffTemp[5];
     uint8_t i, ii;
 

@@ -19,66 +19,331 @@
 #define OLED_NUM_F 0x20
 #define OLED_NUM_G 0x40
 
+#define OLED_I2C_TIMEOUT_MS 10      /* 1 B @400 kHz to ~30 us; 10 ms to spory zapas */
+#define OLED_I2C_MAX_RETRIES 3
+#define OLED_IT_WAIT_TIMEOUT_MS 10  /* limit spina na koniec transferu IT */
+#define OLED_DET_TRIALS_BOOT 2U     /* sondowanie dokładne (start) */
+#define OLED_DET_TIMEOUT_BOOT_MS 5U
+#define OLED_DET_TRIALS_TASK 1U     /* sondowanie lekkie (task, recovery) */
+#define OLED_DET_TIMEOUT_TASK_MS 3U
+#define OLED_REC_PROBE_EVERY_N 10U  /* pełne sondowanie co N cykli taska */
+
 extern I2C_HandleTypeDef hi2c1;
+
+/* Aktywny adres OLED na magistrali I2C1 (8-bit dla HAL). Ustawia go
+ * OLED_Detect() — patrz oled_addr_candidates[]. */
+volatile uint8_t oled_addr = 0x78U;
+
+/* Kandydaci na adres SSD1306: 0x3C (SA0=LOW), 0x3D (SA0=HIGH).
+ * Pierwszy, który odpowie ACK, trafia do oled_addr. */
+const uint8_t oled_addr_candidates[OLED_ADDR_CANDIDATES_COUNT] = {
+    0x78U,   /* 0x3C << 1 */
+    0x7AU    /* 0x3D << 1 */
+};
 
 uint8_t point_x = 0;
 uint8_t point_y = 0;
 uint8_t oled_cache[8][128];
 
-uint8_t whatToDo = 0;
+volatile uint8_t oled_i2c_error = 0;
+volatile uint8_t oled_zombie = 0;
+static uint8_t whatToDo = 0;
+static volatile uint8_t oled_it_active = 0;
+static uint8_t display_off_step = 0;
+
+/* Nieblokujący recovery: maszyna stanów napędzana kolejnymi wywołaniami
+ * OLED_Recover() z taska (co ~20 ms). Zamiast HAL_Delay czas odmierzamy
+ * znacznikami HAL_GetTick(). Flaga oled_i2c_error pozostaje ustawiona
+ * przez cały recovery, żeby task wołał nas w każdym cyklu; czyści ją
+ * dopiero pomyślny OLED_Init() na końcu. */
+typedef enum {
+    OLED_REC_IDLE = 0,
+    OLED_REC_WAIT_AFTER_DEINIT,  /* odczekaj 10 ms po DeInit */
+    OLED_REC_WAIT_AFTER_INIT     /* odczekaj 50 ms po Init */
+} oled_rec_state_t;
+
+static oled_rec_state_t oled_rec_state = OLED_REC_IDLE;
+static uint32_t oled_rec_tick = 0U;
+static uint8_t oled_rec_probe_div = 0U;
+
+/* Znacznik postępu łańcucha odświeżania (ostatni ukończony transfer IT).
+ * Pisany w ISR, czytany przez OLED_WatchdogPoll() w tasku. */
+static volatile uint32_t oled_chain_tick = 0U;
+static volatile uint32_t oled_it_started_tick = 0U;
+#define OLED_CHAIN_STALL_MS 200U  /* brak transferu dłużej = łańcuch stoi */
+
 void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
+    if (hi2c->Instance != I2C1)
+        return;
+
+    oled_it_active = 0;
+    oled_chain_tick = HAL_GetTick();  /* postęp dla watchdoga */
+    oled_it_started_tick = oled_chain_tick;
+
     static uint8_t y = 0;
     static uint8_t dat = 0;
+    HAL_StatusTypeDef status;
+
     if (whatToDo == 4)
     {
-        OLED_WR_Byte(0X8D, OLED_CMD); 
-        OLED_WR_Byte(0X10, OLED_CMD); 
-        OLED_WR_Byte(0XAE, OLED_CMD); 
+        static const uint8_t display_off_cmds[] = {0x8D, 0x10, 0xAE};
+        if (display_off_step < 3)
+        {
+            dat = display_off_cmds[display_off_step];
+            status = HAL_I2C_Mem_Write_IT(&hi2c1, oled_addr, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
+            if (status == HAL_OK)
+            {
+                oled_it_active = 1;
+                display_off_step++;
+            }
+            else
+            {
+                oled_i2c_error = 1;
+                whatToDo = 0;
+                display_off_step = 0;
+            }
+        }
+        else
+        {
+            display_off_step = 0;
+            whatToDo = 0;
+        }
     }
     else if (whatToDo == 3)
     {
-        // OLED_WR_Byte((x & 0x0f), OLED_CMD); 
         dat = 0x00;
-        HAL_I2C_Mem_Write_IT(&hi2c1, OLED_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
-        whatToDo = 0;
+        status = HAL_I2C_Mem_Write_IT(&hi2c1, oled_addr, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
+        if (status == HAL_OK)
+        {
+            oled_it_active = 1;
+            whatToDo = 0;
+        }
+        else
+        {
+            oled_i2c_error = 1;
+        }
     }
     else if (whatToDo == 2)
     {
-        // OLED_WR_Byte(((x & 0xf0) >> 4) | 0x10, OLED_CMD); 
         dat = 0x10;
-        HAL_I2C_Mem_Write_IT(&hi2c1, OLED_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
-        whatToDo = 3;
+        status = HAL_I2C_Mem_Write_IT(&hi2c1, oled_addr, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
+        if (status == HAL_OK)
+        {
+            oled_it_active = 1;
+            whatToDo = 3;
+        }
+        else
+        {
+            oled_i2c_error = 1;
+        }
     }
     else if (whatToDo == 1)
     {
-        // OLED_WR_Byte(0xb0 + y, OLED_CMD); 
         dat = 0xb0 + y;
-        HAL_I2C_Mem_Write_IT(&hi2c1, OLED_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
-        whatToDo = 2;
+        status = HAL_I2C_Mem_Write_IT(&hi2c1, oled_addr, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
+        if (status == HAL_OK)
+        {
+            oled_it_active = 1;
+            whatToDo = 2;
+        }
+        else
+        {
+            oled_it_active = 0;
+            whatToDo = 1; /* spróbuj ponownie w kolejnym cyklu */
+        }
     }
     else if (whatToDo == 0)
     {
-        HAL_I2C_Mem_Write_IT(&hi2c1, OLED_ADDR, 0x40, I2C_MEMADD_SIZE_8BIT, (uint8_t *)(&oled_cache[y]), 128);
-        y += 1;
-        if (y > 7)
+        status = HAL_I2C_Mem_Write_IT(&hi2c1, oled_addr, 0x40, I2C_MEMADD_SIZE_8BIT, (uint8_t *)(&oled_cache[y]), 128);
+        if (status == HAL_OK)
         {
-            y = 0;
+            oled_it_active = 1;
+            y += 1;
+            if (y > 7)
+            {
+                y = 0;
+            }
+            whatToDo = 1;
         }
-        whatToDo = 1;
+        else
+        {
+            oled_it_active = 0;
+            whatToDo = 0; /* spróbuj ponownie w kolejnym cyklu */
+        }
+    }
+}
+
+/* Wznawia transfer jeśli łańcuch IT się zatrzymał */
+void OLED_Kick(void)
+{
+    if (oled_zombie) return;
+    if (oled_it_active) return;
+    if (hi2c1.State != HAL_I2C_STATE_READY) return;
+
+    whatToDo = 0;
+
+    if (HAL_I2C_Mem_Write_IT(&hi2c1, oled_addr, 0x40, I2C_MEMADD_SIZE_8BIT,
+                             (uint8_t *)&oled_cache[0], 128) == HAL_OK)
+    {
+        oled_it_active = 1;
+    }
+}
+
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+    if (hi2c->Instance == I2C1)
+    {
+        oled_it_active = 0;
+        oled_i2c_error = 1;
     }
 }
 
 void OLED_WR_Byte(uint8_t dat, uint8_t cmd)
 {
     if (cmd == OLED_CMD)
-        HAL_I2C_Mem_Write(&hi2c1, OLED_ADDR, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1, 50);
+    {
+        if (oled_zombie) return;
+        if (oled_i2c_error) return;  /* nie doklejaj do padniętej magistrali */
+
+        /* Poczekaj na koniec transferu IT — Z LIMITEM, żeby padnięty
+         * łańcuch nie zakręcił taska w nieskończoność. */
+        uint32_t wait_start = HAL_GetTick();
+        while (oled_it_active)
+        {
+            if (oled_i2c_error ||
+                (HAL_GetTick() - wait_start) > OLED_IT_WAIT_TIMEOUT_MS)
+            {
+                oled_i2c_error = 1;
+                return;
+            }
+        }
+
+        uint8_t retries = OLED_I2C_MAX_RETRIES;
+        HAL_StatusTypeDef status;
+        do
+        {
+            status = HAL_I2C_Mem_Write(&hi2c1, oled_addr, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1, OLED_I2C_TIMEOUT_MS);
+            if (status == HAL_OK)
+                return;
+            /* retry od razu, bez HAL_Delay — timeout powyżej i tak wyznacza granicę */
+        } while (--retries > 0);
+        oled_i2c_error = 1;
+    }
     else
     {
-        // HAL_I2C_Mem_Write(&hi2c1, OLED_ADDR, 0x40, I2C_MEMADD_SIZE_8BIT, &dat, 1, 5);
-        // // HAL_I2C_Mem_Write_IT(&hi2c1, OLED_ADDR, 0x40, I2C_MEMADD_SIZE_8BIT, &dat, 1);
         oled_cache[point_y][point_x] = dat;
         point_x += 1;
+    }
+}
+
+/* Sondowanie kandydatów z oled_addr_candidates[]. Pierwszy z ACK trafia
+ * do oled_addr. Parametry trials/timeout dobiera wołający: dokładne na
+ * starcie (nic innego nie działa), lekkie w tasku (recovery). */
+static uint8_t oled_probe(uint8_t trials, uint8_t timeout_ms)
+{
+    uint8_t i;
+
+    for (i = 0; i < OLED_ADDR_CANDIDATES_COUNT; i++) {
+        uint8_t candidate = oled_addr_candidates[i];
+        if (HAL_I2C_IsDeviceReady(&hi2c1, candidate, trials, timeout_ms) == HAL_OK) {
+            oled_addr = candidate;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+uint8_t OLED_Detect(void)
+{
+    return oled_probe(OLED_DET_TRIALS_BOOT, OLED_DET_TIMEOUT_BOOT_MS);
+}
+
+uint8_t OLED_GetError(void)
+{
+    return oled_i2c_error;
+}
+
+void OLED_ClearError(void)
+{
+    oled_i2c_error = 0;
+}
+
+/* Wykrywa transfer, który nie zakończył się w wyznaczonym czasie. */
+void OLED_WatchdogPoll(void)
+{
+    if (oled_zombie || oled_i2c_error || !oled_it_active) return;
+
+    if ((HAL_GetTick() - oled_it_started_tick) > OLED_CHAIN_STALL_MS) {
+        oled_i2c_error = 1U;
+    }
+}
+
+void OLED_Recover(void)
+{
+    if (oled_zombie) return;
+
+    uint32_t now = HAL_GetTick();
+
+    switch (oled_rec_state)
+    {
+    case OLED_REC_IDLE:
+        /* Start: zatrzymaj łańcuch IT i wyczyść kursory. */
+        oled_it_active = 0;
+        whatToDo = 0;
+        point_x = 0;
+        point_y = 0;
+
+        /* Dzielnik sondowania: przy martwym module nie zarzynaj taska —
+         * pełne (lekkie) sondowanie co N cykli, pomiędzy tylko szybki powrót. */
+        if ((oled_rec_probe_div++ % OLED_REC_PROBE_EVERY_N) != 0U) {
+            oled_i2c_error = 1;
+            return;
+        }
+
+        /* Lekkie sondowanie (polling, bez re-initu): brak modułu
+         * = szybki powrót, task spróbuje w następnym oknie. */
+        if (!oled_probe(OLED_DET_TRIALS_TASK, OLED_DET_TIMEOUT_TASK_MS)) {
+            oled_i2c_error = 1;
+            return;
+        }
+
+        HAL_I2C_DeInit(&hi2c1);
+        oled_rec_tick  = now;
+        oled_rec_state = OLED_REC_WAIT_AFTER_DEINIT;
+        oled_i2c_error = 1;
+        return;
+
+    case OLED_REC_WAIT_AFTER_DEINIT:
+        if ((now - oled_rec_tick) < 10U) {
+            oled_i2c_error = 1;  /* jeszcze czekamy — bez blokowania */
+            return;
+        }
+        HAL_I2C_Init(&hi2c1);
+        oled_rec_tick  = now;
+        oled_rec_state = OLED_REC_WAIT_AFTER_INIT;
+        oled_i2c_error = 1;
+        return;
+
+    case OLED_REC_WAIT_AFTER_INIT:
+        if ((now - oled_rec_tick) < 50U) {
+            oled_i2c_error = 1;  /* jeszcze czekamy — bez blokowania */
+            return;
+        }
+        oled_rec_state = OLED_REC_IDLE;
+        if (!oled_probe(OLED_DET_TRIALS_TASK, OLED_DET_TIMEOUT_TASK_MS)) {
+            oled_i2c_error = 1;
+            return;
+        }
+        /* OLED_Init() czyści flagę błędu i kickuje łańcuch IT.
+         * Gdyby init się wysypał, flaga wróci i recovery ruszy od nowa. */
+        OLED_Init();
+        return;
+
+    default:
+        oled_rec_state = OLED_REC_IDLE;
+        oled_i2c_error = 1;
+        return;
     }
 }
 
@@ -92,6 +357,7 @@ void OLED_WR_Byte(uint8_t dat, uint8_t cmd)
 
 void OLED_Display_Off(void)
 {
+    display_off_step = 0;
     whatToDo = 4;
 }
 
@@ -137,6 +403,12 @@ void OLED_ShowString(uint8_t x, uint8_t y, const char *str)
 //SSD1306
 void OLED_Init(void)
 {
+    whatToDo = 0;
+    oled_it_active = 0;
+    oled_i2c_error = 0;
+    point_x = 0;
+    point_y = 0;
+
     OLED_WR_Byte(0xAE, OLED_CMD); //--display off
     OLED_WR_Byte(0x00, OLED_CMD); 
     OLED_WR_Byte(0x10, OLED_CMD); 
@@ -219,7 +491,7 @@ void OLED_Init(void)
     OLED_ShowString(60, 1, "i");
     OLED_ShowString(69, 1, "Tlen");
 
-    HAL_I2C_MemTxCpltCallback(&hi2c1);
+    OLED_Kick();
 }
 
 const uint8_t heart[] = {

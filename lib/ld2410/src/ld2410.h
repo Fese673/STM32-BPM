@@ -1,0 +1,131 @@
+/*
+ *	An Arduino library for the Hi-Link LD2410 24Ghz FMCW radar sensor.
+ *
+ *  This sensor is a Frequency Modulated Continuous Wave radar, which makes it good for presence detection and its sensitivity at different ranges to both static and moving targets can be configured.
+ *
+ *	The code in this library is based off the manufacturer datasheet and reading of this initial piece of work for ESPHome https://github.com/rain931215/ESPHome-LD2410.
+ *
+ *	https://github.com/ncmreynolds/ld2410
+ *
+ *	Released under LGPL-2.1 see https://github.com/ncmreynolds/ld2410/LICENSE for full license
+ *
+ */
+#ifndef ld2410_h
+#define ld2410_h
+#include <Arduino.h>
+#if defined(ESP32)
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+
+#define LD2410_MAX_FRAME_LENGTH 64
+#ifndef LD2410_BUFFER_SIZE
+#define LD2410_BUFFER_SIZE 256
+#endif
+//#define LD2410_DEBUG_DATA
+#define LD2410_DEBUG_COMMANDS
+//#define LD2410_DEBUG_PARSE
+
+struct FrameData {
+    const uint8_t* data;
+    uint16_t length;
+};
+
+class ld2410	{
+
+	public:
+		ld2410();														//Constructor function
+		~ld2410();														//Destructor function
+		bool begin(Stream &, bool waitForRadar = true);					//Start the ld2410
+		void debug(Stream &);											//Start debugging on a stream
+		bool isConnected();
+		bool read();
+		bool presenceDetected();
+		bool stationaryTargetDetected();
+		uint16_t stationaryTargetDistance();
+		uint8_t stationaryTargetEnergy();
+		bool movingTargetDetected();
+		uint16_t movingTargetDistance();
+		uint8_t movingTargetEnergy();
+		uint16_t detectionDistance();									//Last reported detection distance in cm (Table 12, last field)
+		uint8_t movingEnergyAtGate(uint8_t gate);						//Per-gate motion energy from engineering frames (Table 14)
+		uint8_t stationaryEnergyAtGate(uint8_t gate);				//Per-gate stationary energy from engineering frames (Table 14)
+		bool engineeringRetrieved();								//True once at least one engineering-mode data frame has been parsed
+		bool requestFirmwareVersion();									//Request the firmware version
+		uint8_t firmware_major_version = 0;								//Reported major version
+		uint8_t firmware_minor_version = 0;								//Reported minor version
+		uint32_t firmware_bugfix_version = 0;							//Reported bugfix version (coded as hex)
+		bool requestCurrentConfiguration();								//Request current configuration
+		uint8_t max_gate = 0;
+		uint8_t max_moving_gate = 0;
+		uint8_t max_stationary_gate = 0;
+		uint16_t sensor_idle_time = 0;
+		uint8_t motion_sensitivity[9] = {0,0,0,0,0,0,0,0,0};
+		uint8_t stationary_sensitivity[9] = {0,0,0,0,0,0,0,0,0};
+		bool requestRestart();
+		bool requestFactoryReset();
+		bool requestStartEngineeringMode();
+		bool requestEndEngineeringMode();
+		bool setMaxValues(uint16_t moving, uint16_t stationary, uint16_t inactivityTimer);	//Realistically gate values are 0-8 but sent as uint16_t
+		bool setGateSensitivityThreshold(uint8_t gate, uint8_t moving, uint8_t stationary);
+    	FrameData getFrameData() const;
+		bool isAutoReadTaskRunning();									//True iff autoReadTask() succeeded and the task hasn't been stopped (always false on non-ESP32)
+#if defined(ESP32)
+		bool autoReadTask(uint32_t stack = 4096, UBaseType_t priority = 1, BaseType_t core = tskNO_AFFINITY);
+		void stopAutoReadTask();
+#endif
+
+	protected:
+	private:
+		Stream *radar_uart_ = nullptr;
+		Stream *debug_uart_ = nullptr;									//The stream used for the debugging
+		uint32_t radar_uart_timeout = 100;								//How long to give up on receiving some useful data from the LD2410
+		uint32_t radar_uart_last_packet_ = 0;							//Time of the last packet from the radar
+		uint32_t radar_uart_command_timeout_ = 100;						//Timeout for sending commands
+		uint8_t latest_ack_ = 0;
+		bool latest_command_success_ = false;
+		uint8_t radar_data_frame_[LD2410_MAX_FRAME_LENGTH];				//Store the incoming data from the radar, to check it's in a valid format
+		uint8_t radar_data_frame_position_ = 0;							//Where in the frame we are currently writing; 0 means no frame in progress
+		bool ack_frame_ = false;										//Whether the incoming frame is LIKELY an ACK frame
+		bool waiting_for_ack_ = false;									//Whether a command has just been sent
+		uint8_t target_type_ = 0;
+		uint16_t moving_target_distance_ = 0;
+		uint8_t moving_target_energy_ = 0;
+		uint16_t stationary_target_distance_ = 0;
+		uint8_t stationary_target_energy_ = 0;
+    	uint16_t last_valid_frame_length = 0;
+		uint16_t detection_distance_ = 0;
+		uint8_t engineering_motion_energy_[9] = {0,0,0,0,0,0,0,0,0};
+		uint8_t engineering_stationary_energy_[9] = {0,0,0,0,0,0,0,0,0};
+		bool engineering_data_received_ = false;
+		uint8_t cmd_seq_ = 0;											//Monotonic counter; bumped before each command issue
+		uint8_t cmd_ack_seq_ = 0;										//Mirrored by parser when an ACK matches expected_ack_opcode_
+		uint8_t expected_ack_opcode_ = 0;								//Set by command issuer; checked by parse_command_frame_
+#if defined(ESP32)
+		TaskHandle_t taskHandle_ = nullptr;
+		portMUX_TYPE data_mux_ = portMUX_INITIALIZER_UNLOCKED;
+#endif
+
+		uint8_t circular_buffer[LD2410_BUFFER_SIZE];
+        uint16_t buffer_head = 0;
+        uint16_t buffer_tail = 0;
+
+		void add_to_buffer(uint8_t byte);
+		bool read_from_buffer(uint8_t &byte);
+		bool check_frame_end_();
+		
+		bool read_frame_();		
+		bool parse_data_frame_();										//Is the current data frame valid?
+		bool parse_command_frame_();									//Is the current command frame valid?
+		void begin_command_(uint8_t expected_op);						//Bump cmd_seq_, reset stale state, set expected ACK opcode
+		bool wait_for_ack_(uint8_t expected_op, uint32_t timeout_ms);	//Block until matching ACK arrives or timeout
+		void print_frame_();											//Print the frame for debugging
+		void send_command_preamble_();									//Commands have the same preamble
+		void send_command_postamble_();									//Commands have the same postamble
+		bool enter_configuration_mode_();								//Necessary before sending any command
+		bool leave_configuration_mode_();								//Will not read values without leaving command mode
+#if defined(ESP32)
+		static void taskFunction(void* param);
+#endif
+};
+#endif
