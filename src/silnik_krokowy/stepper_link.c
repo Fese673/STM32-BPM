@@ -300,22 +300,18 @@ void silnik_krokowy_init(void)
     frame_protocol_register(STEPPER_FRAME_CMD, stepper_cmd_dispatch);
 }
 
-/* Bare-metal poll — wolac co iteracje superloop. Wewnetrzna bramka 1 ms:
- * (a) naturalnie limituje tempo do <=1000 krokow/s (= STEPPER_SPEED_MAX),
- * (b) oddaje CPU reszcie petli (frame RX, OLED, radar) miedzy krokami.
- * STOP z ringu ma latencje ~1 ms. Nieblokujaca. */
+/* Bare-metal poll — wolac co iteracje superloop. BEZ bramki czasowej:
+ * stepper_motion_poll() sam pilnuje harmonogramu krokow przez next_us
+ * (rozdzielczosc ~us), wiec wołanie czesciej niz 1 ms tylko poprawia
+ * precyzje (krok dokladnie w terminie, nie na najblizszym ticku HAL).
+ * Przy multisekundowych blokadach superloop (np. erase flash ~20 ms)
+ * zaleglosc nadrabia cap 4 interwalow w motion (bez "strzelania").
+ * STOP z ringu ma latencje jednej iteracji petli. Nieblokujaca. */
 void stepper_poll(void)
 {
-    static uint32_t s_last_poll_ms = 0U;
     static uint8_t booted = 0U;
     static uint8_t was_busy = 0U;
     stepper_cmd_t q;
-
-    uint32_t now_ms = HAL_GetTick();
-    if ((now_ms - s_last_poll_ms) < 1U) {
-        return;
-    }
-    s_last_poll_ms = now_ms;
 
     /* 0. Jednorazowo po starcie: oglos prawde (REF) + autonomiczny
      * powrot do zera gdy skalibrowany i nie stoi na zerze. */

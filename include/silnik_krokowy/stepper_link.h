@@ -49,8 +49,9 @@
  *
  * Watek: handler ramki (kontekst main loop) TYLKO kolejkuje komende
  * (statyczny ring, nigdy nie blokuje dekodera COBS).
- * Ruch wykonuje stepper_poll (bramka 1 ms — nie glodzi reszty,
- * latencja STOP ~1 ms). STOP idzie na poczatek kolejki
+ * Ruch wykonuje stepper_poll (co iteracje superloop, bez bramki —
+ * harmonogramu pilnuje motion_poll przez next_us; latencja STOP
+ * to jedna iteracja petli). STOP idzie na poczatek kolejki
  * i CZYSCI zalegle MOVE (e-stop: po STOP nic starego nie ruszy).
  * DONE wysylane raz na dojazd, z retry do 1 s gdyby ring TX byl pelny.
  *
