@@ -46,7 +46,6 @@ include/
         oledfont.h
     pwm/
         pwm_reg.h
-        pwm_state.h
     radar/
         ld2410_radar.h
         ld2410_radar_wrapper.h
@@ -77,7 +76,6 @@ src/
         oled.c
     pwm/
         pwm_reg.c
-        pwm_state.c
     radar/
         ld2410_radar.cpp
         ld2410_radar_wrapper.cpp

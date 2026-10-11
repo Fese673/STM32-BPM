@@ -35,7 +35,6 @@
 #include "comm/frame_protocol.h"
 #include "radar/ld2410_radar_wrapper.h"
 #include "pwm/pwm_reg.h"
-#include "pwm/pwm_state.h"
 #include "comm/brightness_handler.h"
 #include "stepper/stepper_link.h"
 
@@ -92,7 +91,6 @@ int main(void)
     MX_I2C2_Init();
     MX_TIM3_Init();
     PWM_Reg_Init();   // start TIM3_CH1 (PA6) — jasnosc 7-seg, domyslnie 0
-    PWM_State_Init(); // TIM2 heartbeat PC13 (1 s ON / 1 s OFF)
     MX_USART1_UART_Init();
     MX_USART2_UART_Init();
     MX_NVIC_Init();
@@ -128,12 +126,18 @@ int main(void)
 
     /* USER CODE END 2 */
 
-    /* Superloop: frame RX co iteracje, reszta z wlasnymi bramkami czasowymi.
-     * Dioda PC13 miga TYLKO z TIM2 (pwm_state) — nic w petli jej nie rusza. */
+    /* Superloop. Dioda PC13 miga co 100 ms Z PETLI — jej stanie
+     * znaczy, ze petla stoi. Nic innego diody nie rusza. */
     uint32_t last_i2c_ms = 0U;
+    uint32_t last_led_ms = 0U;
     while (1)
     {
         frame_rx_process();          // ramki COBS z ZEGAR (nieblokujace)
+
+        if ((HAL_GetTick() - last_led_ms) >= 100U) {
+            last_led_ms = HAL_GetTick();
+            HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+        }
 
         if ((HAL_GetTick() - last_i2c_ms) >= 20U) {
             last_i2c_ms = HAL_GetTick();
@@ -465,7 +469,7 @@ static void MX_GPIO_Init(void) // Konfiguracja wszystkich pinów GPIO
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
 
-    /* PC13 (LED diagnostyczny — miga z TIM2, pwm_state) */
+    /* PC13 (LED diagnostyczny — miga z petli co 100 ms) */
     GPIO_InitStruct.Pin   = GPIO_PIN_13;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
