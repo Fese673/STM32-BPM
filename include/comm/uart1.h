@@ -43,14 +43,4 @@ void uart1_irq_handler(void);
  */
 bool uart1_write(const uint8_t *data, uint16_t len);
 
-/**
- * @brief Wyślij C-string (bez null-terminatora).
- */
-void uart1_send_string(const char *str, uint16_t len);
-
-/**
- * @brief Wyślij jeden bajt.
- */
-void uart1_send_byte(uint8_t byte);
-
 #endif /* UART1_H */

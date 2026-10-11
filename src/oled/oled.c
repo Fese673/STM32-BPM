@@ -49,7 +49,6 @@ volatile uint8_t oled_i2c_error = 0;
 volatile uint8_t oled_zombie = 0;
 static uint8_t whatToDo = 0;
 static volatile uint8_t oled_it_active = 0;
-static uint8_t display_off_step = 0;
 
 /* Nieblokujący recovery: maszyna stanów napędzana kolejnymi wywołaniami
  * OLED_Recover() z taska (co ~20 ms). Zamiast HAL_Delay czas odmierzamy
@@ -85,32 +84,7 @@ void HAL_I2C_MemTxCpltCallback(I2C_HandleTypeDef *hi2c)
     static uint8_t dat = 0;
     HAL_StatusTypeDef status;
 
-    if (whatToDo == 4)
-    {
-        static const uint8_t display_off_cmds[] = {0x8D, 0x10, 0xAE};
-        if (display_off_step < 3)
-        {
-            dat = display_off_cmds[display_off_step];
-            status = HAL_I2C_Mem_Write_IT(&hi2c1, oled_addr, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
-            if (status == HAL_OK)
-            {
-                oled_it_active = 1;
-                display_off_step++;
-            }
-            else
-            {
-                oled_i2c_error = 1;
-                whatToDo = 0;
-                display_off_step = 0;
-            }
-        }
-        else
-        {
-            display_off_step = 0;
-            whatToDo = 0;
-        }
-    }
-    else if (whatToDo == 3)
+    if (whatToDo == 3)
     {
         dat = 0x00;
         status = HAL_I2C_Mem_Write_IT(&hi2c1, oled_addr, 0x00, I2C_MEMADD_SIZE_8BIT, &dat, 1);
@@ -264,11 +238,6 @@ uint8_t OLED_GetError(void)
     return oled_i2c_error;
 }
 
-void OLED_ClearError(void)
-{
-    oled_i2c_error = 0;
-}
-
 /* Wykrywa transfer, który nie zakończył się w wyznaczonym czasie. */
 void OLED_WatchdogPoll(void)
 {
@@ -347,19 +316,6 @@ void OLED_Recover(void)
     }
 }
 
-
-//void OLED_Display_On(void)
-//{
-//    OLED_WR_Byte(0X8D, OLED_CMD); //SET DCDC命令
-//    OLED_WR_Byte(0X14, OLED_CMD); //DCDC ON
-//    OLED_WR_Byte(0XAF, OLED_CMD); //DISPLAY ON
-//}
-
-void OLED_Display_Off(void)
-{
-    display_off_step = 0;
-    whatToDo = 4;
-}
 
 void OLED_Set_Pos(uint8_t x, uint8_t y)
 {
@@ -596,105 +552,6 @@ void OLED_showNum(uint8_t which, uint8_t num)
                 temp |= 0x03;
             if (dat & OLED_NUM_C)
                 temp |= 0xf0;
-        }
-        OLED_WR_Byte(temp, OLED_DATA);
-    }
-    OLED_Set_Pos(start, 4);
-    for (i = 0; i < 10; i++)
-    {
-        temp = 0;
-        if (i <= 1)
-        {
-            if (dat & OLED_NUM_E)
-                temp |= 0x07;
-        }
-        else if (i >= 2 && i <= 7)
-        {
-            if (dat & OLED_NUM_D)
-                temp |= 0x18;
-        }
-        else
-        {
-            if (dat & OLED_NUM_C)
-                temp |= 0x07;
-        }
-        OLED_WR_Byte(temp, OLED_DATA);
-    }
-}
-
-// UWAGA ZMIANA NOWA FUNKCJA 
-void OLED_showNumAt(uint8_t x_start, uint8_t num)
-{
-    uint8_t dat   = oled_nums[num];
-    uint8_t start = x_start;     // zamiast oled_nums_pos[which]
-    uint8_t i, temp;
-
-    OLED_Set_Pos(start, 3);
-    for (i = 0; i < 10; i++)
-    {
-        temp = 0;
-        if (i <= 1)
-        {
-            if (dat & OLED_NUM_F)
-                temp |= 0xf8;
-        }
-        else if (i >= 2 && i <= 7)
-        {
-            if (dat & OLED_NUM_A)
-                temp |= 0x06;
-        }
-        else
-        {
-            if (dat & OLED_NUM_B)
-                temp |= 0xf8;
-        }
-        OLED_WR_Byte(temp, OLED_DATA);
-    }
-
-    OLED_Set_Pos(start, 4);
-    for (i = 0; i < 10; i++)
-    {
-        temp = 0;
-        if (i <= 1)
-        {
-            if (dat & OLED_NUM_F)
-                temp |= 0x03;
-            if (dat & OLED_NUM_E)
-                temp |= 0xf0;
-        }
-        else if (i >= 2 && i <= 7)
-        {
-            if (dat & OLED_NUM_G)
-                temp |= 0x0c;
-        }
-        else
-        {
-            if (dat & OLED_NUM_B)
-                temp |= 0x03;
-            if (dat & OLED_NUM_C)
-                temp |= 0xf0;
-        }
-        OLED_WR_Byte(temp, OLED_DATA);
-    }
-
-    OLED_Set_Pos(start, 5);
-    for (i = 0; i < 10; i++)
-    {
-        temp = 0;
-        if (i <= 1)
-        {
-            if (dat & OLED_NUM_E)
-                temp |= 0x07;
-        }
-        else if (i >= 2 && i <= 7)
-        {
-            if (dat & OLED_NUM_D)
-                temp |= 0x18;
-        }
-        else
-        {
-            if (dat & OLED_NUM_C)
-                temp |= 0x07;
         }
         OLED_WR_Byte(temp, OLED_DATA);
     }

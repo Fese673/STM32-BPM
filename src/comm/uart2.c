@@ -90,18 +90,5 @@ void uart2_write_byte(uint8_t byte)
     (void)uart2_write_byte_timeout(byte, 10U);
 }
 
-bool uart2_write_timeout(const uint8_t *data, uint16_t len, uint32_t timeout_ms)
-{
-    for (uint16_t i = 0U; i < len; i++) {
-        if (!uart2_write_byte_timeout(data[i], timeout_ms)) return false;
-    }
-    return true;
-}
-
-void uart2_write(const uint8_t *data, uint16_t len)
-{
-    (void)uart2_write_timeout(data, len, 10U);
-}
-
 uint32_t uart2_get_tx_timeouts(void) { return g_uart2_tx_timeouts; }
 uint32_t uart2_get_rx_drops(void) { return g_uart2_rx_drops; }

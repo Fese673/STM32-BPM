@@ -18,9 +18,6 @@ void max30102_init();
 uint8_t max30102_getUnreadSampleCount();
 void max30102_getFIFO(SAMPLE *data, uint8_t sampleCount);
 uint8_t max30102_getStatus();
-// float max30102_getTemperature();
-void max30102_OFF();
-void max30102_ON();
 
 void max30102_cal();
 uint8_t max30102_getHeartRate();

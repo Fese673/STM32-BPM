@@ -18,19 +18,7 @@ extern const uint8_t oled_addr_candidates[OLED_ADDR_CANDIDATES_COUNT];
 #define OLED_CMD 0  // Zapis komendy konfiguracyjnej (Co=0, DC=0)
 #define OLED_DATA 1 // Zapis danych pikseli do GDDRAM (Co=0, DC=1)
 
-// Tryb komunikacji (nieużywany w tym projekcie - I2C jest domyślny)
-#define OLED_MODE 0
-//(4-wire SPI)
-//1:8080 (8-bit parallel 8080 interface)
-
-
-
-
 //-----------------OLED---------------- (Definicje portów OLED)
-
-// Callback dla przerwań I2C (jeśli używany tryb asynchroniczny DMA/IT)
-void OLED_I2C_callBack();
-
 
 //OLED (Funkcje sterowania OLED)
 
@@ -38,12 +26,6 @@ void OLED_I2C_callBack();
 // dat: bajt danych do wysłania
 // cmd: tryb (OLED_CMD=komenda, OLED_DATA=dane pikseli)
 void OLED_WR_Byte(uint8_t dat, uint8_t cmd);
-
-// Włączenie wyświetlacza (zakomentowane - może być nieużywane)
-// void OLED_Display_On(void);
-
-// Wyłączenie wyświetlacza (tryb uśpienia, oszczędność energii)
-void OLED_Display_Off(void);
 
 // Inicjalizacja wyświetlacza OLED (reset, konfiguracja SSD1306)
 void OLED_Init(void);
@@ -74,18 +56,11 @@ void OLED_showHeart(uint8_t showOrNot);
 // num: wartość cyfry (0-9) lub 10 (spacja)
 void OLED_showNum(uint8_t which, uint8_t num);
 
-// Wyświetlenie pojedynczej dużej cyfry w dowolnym X
-// x_start: współrzędna X w pikselach (0–127)
-// num: wartość cyfry (0-9) lub 10 (spacja)
-void OLED_showNumAt(uint8_t x_start, uint8_t num);
-
-
 // Rysowanie wykresu fali PPG (oscylogram tętna)
 // value: amplituda sygnału (różnica max30102_getDiff())
 void OLED_drawChart(float value);
 
 uint8_t OLED_GetError(void);
-void OLED_ClearError(void);
 // Watchdog łańcucha odświeżania (nieblokujący, do wołania co cykl taska).
 // Wykrywa skleszczony łańcuch bez flagi błędu i wymusza recovery.
 void OLED_WatchdogPoll(void);

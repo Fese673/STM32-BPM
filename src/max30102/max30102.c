@@ -65,18 +65,6 @@ void max30102_init(void)
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_INTERRUPT_ENABLE_1,
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
 
-    // /* Temperature conversion complete interrupt */
-    // data = 0x02;
-    // HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_INTERRUPT_ENABLE_2,
-    //                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-    // /*25 unread interrupts*/
-    // data = 0x7;
-    // Full Buffer Interrupt
-    // data = 0x80;
-    // HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_INTERRUPT_ENABLE_1,
-    //                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-    // HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_FIFO_CONFIGURATION,
-    //                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
     /* 16384-range 50Hz 18-bit ADC resolution */
     data = 0x63;
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_SPO2_CONFIGURATION,
@@ -103,11 +91,6 @@ void max30102_init(void)
 
     /* interrupt status clear */
     max30102_getStatus();
-
-    // /*Convert temperature*/
-    // data = 1;
-    // HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_DIE_TEMPERATURE_CONFIG,
-    //                   I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
 
     /* SPO2 Mode */
     data = 0x03;
@@ -173,57 +156,6 @@ uint8_t max30102_getStatus(void)
 
     return data | dataTemp;
 }
-
-/* Use this to read the status and determine whether the conversion is complete.
-float max30102_getTemperature(void)
-{
-    int8_t dataTemp = 0;
-    float  data;
-
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_DIE_TEMP_INTEGER,
-                     I2C_MEMADD_SIZE_8BIT, (uint8_t *)(&dataTemp), 1, 10);
-    data = dataTemp;
-
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_DIE_TEMP_FRACTION,
-                     I2C_MEMADD_SIZE_8BIT, (uint8_t *)(&dataTemp), 1, 10);
-    data += dataTemp * 0.0625f;
-
-    // Initiate the next conversion
-    dataTemp = 1;
-    HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_DIE_TEMPERATURE_CONFIG,
-                      I2C_MEMADD_SIZE_8BIT, (uint8_t *)(&dataTemp), 1, 10);
-
-    return data;
-}
-*/
-
-void max30102_OFF(void)
-{
-    if (max30102_zombie) return;
-
-    uint8_t data = 0;
-
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_MODE_CONFIGURATION,
-                     I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-    data |= 0x80;
-    HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_MODE_CONFIGURATION,
-                      I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-}
-
-void max30102_ON(void)
-{
-    if (max30102_zombie) return;
-
-    uint8_t data = 0;
-
-    HAL_I2C_Mem_Read(&hi2c2, MAX30102_ADDR_READ, RES_MODE_CONFIGURATION,
-                     I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-    data &= ~(0x80);
-    HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_MODE_CONFIGURATION,
-                      I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
-}
-
-
 
 #define BUFF_SIZE 50
 SAMPLE sampleBuff[BUFF_SIZE];

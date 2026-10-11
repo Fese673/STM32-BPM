@@ -89,21 +89,11 @@ bool uart1_write(const uint8_t *data, uint16_t len)
     return ok;
 }
 
-void uart1_send_string(const char *str, uint16_t len)
-{
-    if (str && len > 0) (void)uart1_write((const uint8_t *)str, len);
-}
-
-void uart1_send_byte(uint8_t byte)
-{
-    (void)uart1_write(&byte, 1U);
-}
-
 /* ============================================================================ */
 /* TX ENGINE                                                                   */
 /* ============================================================================ */
 
-void uart1_tx_kick(void)
+static void uart1_tx_kick(void)
 {
     if (tx_busy) return;
     if (tx_head == tx_tail) return;

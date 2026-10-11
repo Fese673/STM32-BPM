@@ -227,11 +227,7 @@ bool frame_tx_radar(uint8_t presence, uint16_t movDist, uint8_t movEnergy,
     payload[4] = (uint8_t)(statDist & 0xFFU);
     payload[5] = (uint8_t)((statDist >> 8U) & 0xFFU);
     payload[6] = statEnergy;
-    payload[7] = (uint8_t)(detectDist & 0xFFU);
-    // detectDist high byte = 0 bo max 8m=800cm <255, ale zostawiamy 8B dla rozszerzenia
-    // payload[7] to low, high pomijamy - kompatybilność wsteczna
-    // Wersja pełna 8B: presence(1)+movD(2)+movE(1)+statD(2)+statE(1)+detect(1)
-    // detectDist <256cm w 95% przypadków, więc 1B wystarczy
+    payload[7] = (uint8_t)(detectDist & 0xFFU);  /* detect < 800 cm, 1 B wystarcza */
     return frame_tx_send(FRAME_TYPE_RADAR, payload, 8U);
 }
 
