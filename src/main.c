@@ -146,19 +146,11 @@ int main(void)
      * znaczy, ze petla stoi. Nic innego diody nie rusza. */
     uint32_t last_i2c_ms = 0U;
     uint32_t last_led_ms = 0U;
-    uint32_t last_presence_ms = (uint32_t)-3000;   /* zeby po starcie od razu migala */
     while (1)
     {
         frame_rx_process();          // ramki COBS z ZEGAR (nieblokujace)
 
-        /* TEST-RADAR (tymczasowe): obecnosc (ruch/stan) = dioda stale 3 s,
-         * potem wraca miganie 100 ms. Bez radara/bez detekcji tylko miga. */
-        if (ld2410_radar_presence_detected()) {
-            last_presence_ms = HAL_GetTick();
-        }
-        if ((HAL_GetTick() - last_presence_ms) < 3000U) {
-            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);  /* stale ON */
-        } else if ((HAL_GetTick() - last_led_ms) >= 100U) {
+        if ((HAL_GetTick() - last_led_ms) >= 100U) {
             last_led_ms = HAL_GetTick();
             HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
         }

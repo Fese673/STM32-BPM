@@ -14,6 +14,8 @@
  *   kStmTypePpg         0xA0  STM32→ZEGAR  payload=[diff_lo, diff_hi]
  *   kStmTypeBpm         0xA1  STM32→ZEGAR  payload=[bpm, spo2]
  *   kStmTypeAck         0xA2  STM32→ZEGAR  payload=[ok, relatedType]
+ *   kStmTypeRadar       0xA3  STM32→ZEGAR  payload=[presence,mov_lo,mov_hi,movE,stat_lo,stat_hi,statE,detect]
+ *                                          wysylka: przy zmianie stanu lub co 1 s (wrapper radaru)
  *   kStmTypeBrightness  0xB0  ZEGAR→STM32  payload=[value 0..100]
  *
  * Maksymalny rozmiar payload: 128B (kMaxPayloadBytes).
