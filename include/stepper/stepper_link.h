@@ -90,6 +90,10 @@ void stepper_init(void);
 /* Bare-metal poll steppera. Wolac co iteracje superloop (nieblokujacy). */
 void stepper_poll(void);
 
+/* TEMP-DIAG: ostatnia komenda / predkosc / licznik RX / pozycja / busy. */
+void stepper_diag(uint8_t *cmd, uint16_t *speed, uint32_t *rxn,
+                  int32_t *pos, uint8_t *busy);
+
 /* Liczniki do debugowania BEZ UART (DEBUG_LOG nie wolno — pisze na UART1
  * i rozsypalby strumien COBS!). Podglad w debuggerze. */
 extern volatile uint32_t g_stepper_rx_cmd;

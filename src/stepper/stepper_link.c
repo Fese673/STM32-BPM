@@ -41,6 +41,8 @@ static uint8_t s_cmd_head = 0U;
 static uint8_t s_cmd_tail = 0U;
 static uint8_t s_cmd_count = 0U;
 static uint8_t s_cmd_ready = 0U;
+static uint8_t s_last_cmd = 0U;     /* TEMP-DIAG: ostatnia zakolejkowana komenda */
+static uint16_t s_last_speed = 0U;  /* TEMP-DIAG: jej predkosc */
 static stepper_motion_t s_motion;
 
 /* DONE jest krytyczne dla apki (czeka na nie sekwencer): jesli ring TX byl
@@ -271,6 +273,8 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
     }
     if (ok) {
         ++g_stepper_rx_cmd;
+        s_last_cmd = q.cmd;      /* TEMP-DIAG */
+        s_last_speed = q.speed;  /* TEMP-DIAG */
         (void)frame_tx_ack(1U, STEPPER_FRAME_CMD);
     } else {
         ++g_stepper_rx_bad;
@@ -298,6 +302,17 @@ void stepper_init(void)
     s_cmd_count = 0U;
     s_cmd_ready = 1U;
     frame_protocol_register(STEPPER_FRAME_CMD, stepper_cmd_dispatch);
+}
+
+/* TEMP-DIAG: odczyt do wyswietlenia na OLED (jeden test, potem usunać). */
+void stepper_diag(uint8_t *cmd, uint16_t *speed, uint32_t *rxn,
+                  int32_t *pos, uint8_t *busy)
+{
+    if (cmd) *cmd = s_last_cmd;
+    if (speed) *speed = s_last_speed;
+    if (rxn) *rxn = g_stepper_rx_cmd;
+    if (pos) *pos = stepper_motion_pos(&s_motion);
+    if (busy) *busy = stepper_motion_busy(&s_motion);
 }
 
 /* Bare-metal poll — wolac co iteracje superloop. BEZ bramki czasowej:

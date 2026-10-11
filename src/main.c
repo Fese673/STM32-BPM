@@ -234,6 +234,21 @@ static void i2c_ctrl_poll(void)
 
         (void)frame_tx_ppg(diff);
     }
+
+    /* TEMP-DIAG: co silnik dostal (jeden test, potem usunac). */
+    {
+        uint8_t dcmd = 0U, dbusy = 0U;
+        uint16_t dspd = 0U;
+        uint32_t drxn = 0U;
+        int32_t dpos = 0L;
+        char line[22];
+        stepper_diag(&dcmd, &dspd, &drxn, &dpos, &dbusy);
+        snprintf(line, sizeof(line), "C%u S%u N%lu", (unsigned)dcmd,
+                 (unsigned)dspd, (unsigned long)drxn);
+        OLED_ShowString(0, 0, line);
+        snprintf(line, sizeof(line), "P%ld B%u", (long)dpos, (unsigned)dbusy);
+        OLED_ShowString(0, 1, line);
+    }
 }
 
 
