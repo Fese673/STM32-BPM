@@ -21,6 +21,7 @@ Stan na branch TEST. Piny wg kodu (MX_*, stepper_hw, msp).
 | PA10 | USART1 RX ← ZEGAR (9600) | IN PU | ESP32 GPIO17 |
 | PA2 | USART2 TX → radar (256000) | AF PP | LD2410C RX (pin 2) |
 | PA3 | USART2 RX ← radar (256000) | IN PU | LD2410C TX (pin 1) |
+| PB5 | Radar OUT (HIGH=obecność) | IN PD | LD2410C OUT (pin 3) |
 | PA13/PA14 | SWDIO / SWCLK | AF | ST-Link |
 | 5V / 3V3 / G | zasilanie | — | silnik 5 V, logika 3,3 V, GND wspólna |
 
@@ -32,7 +33,7 @@ Stan na branch TEST. Piny wg kodu (MX_*, stepper_hw, msp).
 | 4 GND | GND (dowolny) | masa wspólna, obowiązkowo |
 | 1 TX | PA3 (RX) | poziom 3,3 V, wprost |
 | 2 RX | PA2 (TX) | poziom 3,3 V, wprost |
-| 3 OUT | — (wolny) | stan obecności HIGH/LOW, my bierzemy dane z UART |
+| 3 OUT | PB5 (wejście, pull-down w STM32) | HIGH 3,3 V = obecność, LOW = pusto |
 
 Silnik 28BYJ-48 (typowe kolory): czerwony = VCC (+5 V, nie do STM32),
 fazowe: niebieski / różowy / żółty / pomarańczowy → IN1–IN4

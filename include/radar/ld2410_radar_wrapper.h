@@ -12,7 +12,15 @@
 extern "C" {
 #endif
 
-void ld2410_radar_init(void);
+/* Start radaru z presetem czulosci OUT (0 = SREDNIA, 1 = WYSOKA,
+ * 2 = MALA; inna wartosc = SREDNIA). Preset zyje we flash truth —
+ * main.c podaje truth_radar_sens() (stepper_init juz przed tym). */
+void ld2410_radar_init(uint8_t sens_code);
+
+/* Zmiana presetu czulosci w locie (komenda SET_RADAR_SENS 0x0F).
+ * Nieblokujace: zapamietuje zadanie; poll aplikuje jedna sesja config
+ * gdy radar zywy (brak lacza -> zadanie czeka do 30 s). */
+void ld2410_radar_sens_request(uint8_t code);
 
 /* Bare-metal poll — wywolywac co iteracje superloop (nieblokujacy). */
 void ld2410_radar_poll(void);

@@ -12,12 +12,31 @@ static uint32_t s_last_ok_ms = 0U;
 static uint32_t s_radar_frames_ok = 0U;
 static uint32_t s_radar_frames_bad = 0U;
 
-/* Progi czulosci bramek 0..8 (0-100; WYZSZY = mniej czuly).
+/* Presety czulosci OUT (progi bramek 0..8; 0-100, WYZSZY = mniej czuly).
  * Fabryczne: ruch 50,50,40,30,20,15,15,15,15 / postoj 0,0,40,40,30,30,20,20,20.
- * Tu: czulosc o polowe mniejsza = progi x2 (100 = bramka praktycznie slepa).
+ *  kod 0 SREDNIA (default): fabryczne x2 (dotychczasowe "o polowe mniej")
+ *  kod 1 WYSOKA:  fabryczne (najczulsza)
+ *  kod 2 MALA:    fabryczne x3 (clamp 100)
  * Bramki 0/1 postoj zostaja 0 (fabrycznie wylaczone). */
-static const uint8_t kRadarMovSens[9]  = {100, 100, 80, 60, 40, 30, 30, 30, 30};
-static const uint8_t kRadarStatSens[9] = {0,   0,   80, 80, 60, 60, 40, 40, 40};
+static const uint8_t kSensMov[3][9] = {
+    {100, 100,  80, 60, 40, 30, 30, 30, 30},  /* 0 SREDNIA */
+    { 50,  50,  40, 30, 20, 15, 15, 15, 15},  /* 1 WYSOKA  */
+    {100, 100, 100, 90, 60, 45, 45, 45, 45},  /* 2 MALA    */
+};
+static const uint8_t kSensStat[3][9] = {
+    {0, 0,  80, 80, 60, 60, 40, 40, 40},  /* 0 SREDNIA */
+    {0, 0,  40, 40, 30, 30, 20, 20, 20},  /* 1 WYSOKA  */
+    {0, 0, 100, 100, 90, 90, 60, 60, 60},  /* 2 MALA    */
+};
+
+static uint8_t s_sens_code = 0U;        /* aktywny preset (RAM; truth we flash) */
+static uint8_t s_sens_pending = 0xFFU;  /* 0xFF = brak zadania zmiany */
+static uint32_t s_sens_request_ms = 0U;
+
+static uint8_t sens_sanitize(uint8_t code)
+{
+    return (code <= 2U) ? code : 0U;
+}
 
 static int uart_available(void)
 {
@@ -32,7 +51,7 @@ static void uart_write(uint8_t byte)
     uart2_write_byte(byte);
 }
 
-void ld2410_radar_init(void)
+void ld2410_radar_init(uint8_t sens_code)
 {
     // MX_USART2_UART_Init() jest już wołany w main.c przed tym init.
     // Nie wołamy ponownie aby nie re-inicjalizować HAL-UART w locie.
@@ -54,14 +73,22 @@ void ld2410_radar_init(void)
      * radaru wlacza sie ponownie dopiero przy restarcie STM32. */
     (void)s_radar.requestStartEngineeringMode();
 
-    /* Czulosc o polowe mniejsza (progi x2). Tylko gdy radar odpowiedzial
-     * (martwy nie opoznia startu o ~9 timeouts). Strojenie: tabele wyzej. */
+    /* Czulosc z presetu (truth flash; main.c podaje truth_radar_sens()).
+     * Jedna sesja config (~150 ms). Tylko gdy radar odpowiedzial
+     * (martwy nie opoznia startu). */
+    s_sens_code = sens_sanitize(sens_code);
     if (s_radar.isConnected()) {
-        for (uint8_t g = 0U; g < 9U; ++g) {
-            (void)s_radar.setGateSensitivityThreshold(g, kRadarMovSens[g],
-                                                      kRadarStatSens[g]);
-        }
+        (void)s_radar.setGateSensitivityThresholds(kSensMov[s_sens_code],
+                                                   kSensStat[s_sens_code]);
     }
+}
+
+/* Zmiana presetu czulosci z UI (komenda 0x0F -> truth). Aplikacja w poll:
+ * jednorazowa sesja config gdy radar zywy; brak lacza -> czekaj do 30 s. */
+void ld2410_radar_sens_request(uint8_t code)
+{
+    s_sens_pending = sens_sanitize(code);
+    s_sens_request_ms = HAL_GetTick();
 }
 
 /* Bare-metal poll — wolac co iteracje superloop. Wewnetrzny throttle
@@ -96,6 +123,22 @@ void ld2410_radar_poll(void)
                     s_radar_zombie = true;
                 }
                 if (!got) ++s_radar_frames_bad;
+            }
+        }
+    }
+
+    /* Preset czulosci z UI (0x0F): jednorazowa sesja config, gdy radar zywy.
+     * Brak lacza — zadanie czeka do 30 s (potem przepada; wartosc jest juz
+     * w truth i wroci przy nastepnym starcie STM32). */
+    if (s_sens_pending != 0xFFU) {
+        if ((now - s_sens_request_ms) > 30000U) {
+            s_sens_pending = 0xFFU;
+        } else if (s_initialised && !s_radar_zombie && s_radar.isConnected()) {
+            const uint8_t code = s_sens_pending;
+            s_sens_pending = 0xFFU;
+            if (s_radar.setGateSensitivityThresholds(kSensMov[code],
+                                                     kSensStat[code])) {
+                s_sens_code = code;
             }
         }
     }

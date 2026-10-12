@@ -3,9 +3,11 @@
  *
  * Layout flash (ostatnia strona 1 KB @ 0x0800FC00):
  *   slot A @ +0x00 (32 B), slot B @ +0x20 (32 B), reszta strony wolna.
- * Slot: [magic u32][seq u32][pos i32][span i32][homeSpeed u16][homeAccel u16]
- *        [rsvd u16][crc u16] = 24 B programowane jako 12 half-wordow.
- * CRC16-CCITT (poly 0x1021, init 0xFFFF) liczone po bajtach [magic..rsvd].
+ * Slot v3: [magic u32][seq u32][pos i32][span i32][homeSpeed u16][flags u16]
+ *          [homeDeg u16][targetDeg u16][autoCloseS u16][crc u16] = 28 B.
+ * Starsze sloty (v2 26 B / v1 24 B) czytane TYLKO przy migracji po
+ * aktualizacji firmware — zachowuja kalibracje/home/target/predkosc.
+ * CRC16-CCITT (poly 0x1021, init 0xFFFF) liczone po bajtach [magic..ostatnie pole].
  *
  * Zapis: na przemian A/B; jezeli docelowy slot nie jest wyczyszczony
  * (magic != 0xFFFFFFFF) -> erase calej strony, potem zapis slotu A.
@@ -45,8 +47,24 @@ typedef struct {
     uint16_t flags;
     uint16_t home_deg;   /* cel powrotu po resecie 0..360 */
     uint16_t target_deg; /* WYBRANY kat (UI/automat), 0xFFFF = brak -> default */
+    /* Czas auto-zjazdu radaru (sekundy). Tylko presety 30/120/300/600
+     * (walidacja przy odczycie i zapisie; inna wartosc = fabryczna 30). */
+    uint16_t auto_close_s;
     uint16_t crc;
 } truth_slot_t;
+
+/* Poprzedni layout v2 (26 B, przed auto_close_s) — tylko migracja. */
+typedef struct {
+    uint32_t magic;
+    uint32_t seq;
+    int32_t  pos;
+    int32_t  span;
+    uint16_t home_speed;
+    uint16_t flags;
+    uint16_t home_deg;
+    uint16_t target_deg;
+    uint16_t crc;
+} truth_slot_v2_t;
 
 /* Stary layout (24 B, przed target_deg) — czytany tylko przy migracji
  * po aktualizacji firmware: zachowuje kalibracje/home/predkosc. */
@@ -62,6 +80,8 @@ typedef struct {
 } truth_slot_old_t;
 
 #define TRUTH_TARGET_DEF 45U
+/* Fabryczny czas auto-zjazdu radaru (s). Presety UI: 30/120/300/600. */
+#define TRUTH_AUTO_CLOSE_DEF_S 30U
 
 static uint32_t s_seq = 0U;
 static int32_t  s_span = 0L;
@@ -69,7 +89,9 @@ static uint8_t  s_cal_ok = 0U;
 static uint16_t s_home_speed = TRUTH_SPEED_DEF; /* nadpisuje flash w init */
 static uint16_t s_home_deg = 0U; /* cel powrotu po resecie (nadpisuje flash) */
 static uint8_t  s_radar_en = 0U; /* automat LD2410C (nadpisuje flash) */
+static uint8_t  s_radar_sens = 0U; /* preset czulosci OUT 0/1/2 (nadpisuje flash) */
 static uint16_t s_target_deg = TRUTH_TARGET_DEF; /* wybrany kat (nadpisuje flash) */
+static uint16_t s_auto_close_s = TRUTH_AUTO_CLOSE_DEF_S; /* auto-zjazd radaru (flash) */
 static int32_t  s_last_saved_pos = 0L;
 static uint8_t  s_have_saved_base = 0U;
 
@@ -141,6 +163,42 @@ static uint8_t slot_valid_old(const truth_slot_old_t *s)
     return slot_crc_old(s) == s->crc ? 1U : 0U;
 }
 
+/* --- Migracja v2 (26 B, bez auto_close_s) --- */
+
+static uint16_t slot_crc_v2(const truth_slot_v2_t *s)
+{
+    return crc16_ccitt((const uint8_t *)s,
+                       (uint32_t)((const uint8_t *)&s->crc - (const uint8_t *)s));
+}
+
+static void slot_read_v2(uint32_t addr, truth_slot_v2_t *out)
+{
+    const uint8_t *p = (const uint8_t *)addr;
+    uint8_t *d = (uint8_t *)out;
+    for (uint32_t i = 0U; i < sizeof(truth_slot_v2_t); ++i) d[i] = p[i];
+}
+
+static uint8_t slot_valid_v2(const truth_slot_v2_t *s)
+{
+    if (s->magic != TRUTH_MAGIC) return 0U;
+    return slot_crc_v2(s) == s->crc ? 1U : 0U;
+}
+
+/* Auto-zjazd radaru: tylko presety UI; cokolwiek innego (w tym 0xFFFF
+ * z erase-widma i smieci po czesciowym zapisie) = fabryczna wartosc. */
+static uint16_t ac_sanitize(uint16_t s)
+{
+    switch (s) {
+    case 30U:
+    case 120U:
+    case 300U:
+    case 600U:
+        return s;
+    default:
+        return TRUTH_AUTO_CLOSE_DEF_S;
+    }
+}
+
 /* Fizyczny zapis slotu. Kontekst: stepper_poll, postoj. Zwraca 1 gdy OK. */
 static uint8_t flash_write_slot(uint32_t addr, const truth_slot_t *s)
 {
@@ -200,9 +258,12 @@ static uint8_t truth_save_now(int32_t pos)
     s.pos         = pos;
     s.span        = s_span;
     s.home_speed  = s_home_speed;
-    s.flags       = s_radar_en ? TRUTH_FLAG_RADAR_EN : 0U;
+    s.flags       = (uint16_t)((s_radar_en ? TRUTH_FLAG_RADAR_EN : 0U) |
+                               ((uint16_t)(s_radar_sens & 0x03U)
+                                << TRUTH_FLAG_RADAR_SENS_SHIFT));
     s.home_deg    = s_home_deg;
     s.target_deg  = s_target_deg;
+    s.auto_close_s = s_auto_close_s;
     s.crc         = slot_crc(&s);
 
     /* Cel: slot niewazny; gdy oba wazne — starszy (mniejszy seq). */
@@ -250,10 +311,15 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
         s_home_deg = hd;
         /* Automat radaru (stare sloty maja w flags 1000 = bit0 0 = OFF). */
         s_radar_en = (uint8_t)((best->flags & TRUTH_FLAG_RADAR_EN) != 0U);
+        /* Preset czulosci OUT (bity 1-2; stare sloty = 0 = SREDNIA). */
+        s_radar_sens = (uint8_t)((best->flags >> TRUTH_FLAG_RADAR_SENS_SHIFT) & 0x03U);
+        if (s_radar_sens > 2U) s_radar_sens = 0U;
         /* Wybrany kat (0xFFFF/poza zakresem = default). */
         uint16_t td = best->target_deg;
         if (td == 0xFFFFU || td > 360U) td = TRUTH_TARGET_DEF;
         s_target_deg = td;
+        /* Auto-zjazd radaru (tylko presety; inne = fabryczny). */
+        s_auto_close_s = ac_sanitize(best->auto_close_s);
         s_last_saved_pos = best->pos;
         s_have_saved_base = 1U;
         if (pos_out != NULL)    *pos_out = best->pos;
@@ -265,6 +331,46 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
             s_home_needed = (uint8_t)(s_cal_ok && (best->pos != (int32_t)ht));
         }
     } else {
+        /* Migracja v2 (26 B, przed auto_close_s): zachowaj kalibracje/home/
+         * wybrany kat/automat; auto-zjazd = fabryczny. */
+        truth_slot_v2_t a2, b2;
+        slot_read_v2(TRUTH_SLOT_A, &a2);
+        slot_read_v2(TRUTH_SLOT_B, &b2);
+        const uint8_t va2 = slot_valid_v2(&a2);
+        const uint8_t vb2 = slot_valid_v2(&b2);
+        const truth_slot_v2_t *v2 = NULL;
+        if (va2 && vb2)      v2 = (a2.seq >= b2.seq) ? &a2 : &b2;
+        else if (va2)        v2 = &a2;
+        else if (vb2)        v2 = &b2;
+
+        if (v2 != NULL) {
+            s_seq = v2->seq;
+            s_span = v2->span;
+            s_cal_ok = (v2->span >= TRUTH_MIN_SPAN) ? 1U : 0U;
+            uint16_t hs = v2->home_speed;
+            if (hs < TRUTH_SPEED_MIN || hs > TRUTH_SPEED_MAX) hs = TRUTH_SPEED_DEF;
+            if (hs == 0U || hs == 0xFFFFU) hs = TRUTH_SPEED_DEF;
+            s_home_speed = hs;
+            uint16_t hd = v2->home_deg;
+            if (hd == 0xFFFFU || hd > 360U) hd = 0U;
+            s_home_deg = hd;
+            s_radar_en = (uint8_t)((v2->flags & TRUTH_FLAG_RADAR_EN) != 0U);
+            s_radar_sens = (uint8_t)((v2->flags >> TRUTH_FLAG_RADAR_SENS_SHIFT) & 0x03U);
+            if (s_radar_sens > 2U) s_radar_sens = 0U;
+            uint16_t td = v2->target_deg;
+            if (td == 0xFFFFU || td > 360U) td = TRUTH_TARGET_DEF;
+            s_target_deg = td;
+            s_auto_close_s = TRUTH_AUTO_CLOSE_DEF_S;
+            s_last_saved_pos = v2->pos;
+            s_have_saved_base = 1U;
+            if (pos_out != NULL)    *pos_out = v2->pos;
+            if (span_out != NULL)   *span_out = v2->span;
+            if (cal_ok_out != NULL) *cal_ok_out = s_cal_ok;
+            {
+                int64_t ht = s_cal_ok ? (((int64_t)s_home_deg * (int64_t)s_span) / 90LL) : 0LL;
+                s_home_needed = (uint8_t)(s_cal_ok && (v2->pos != (int32_t)ht));
+            }
+        } else {
         /* Migracja ze starego layoutu 24 B (po aktualizacji firmware):
          * zachowaj kalibracje/home/predkosc; nowe pola = default. */
         truth_slot_old_t oa, ob;
@@ -289,7 +395,9 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
             if (hd == 0xFFFFU || hd > 360U) hd = 0U;
             s_home_deg = hd;
             s_radar_en = 0U;                /* stary layout nie mial flag */
+            s_radar_sens = 0U;              /* brak presetu -> SREDNIA */
             s_target_deg = TRUTH_TARGET_DEF;
+            s_auto_close_s = TRUTH_AUTO_CLOSE_DEF_S;
             s_last_saved_pos = old->pos;
             s_have_saved_base = 1U;
             if (pos_out != NULL)    *pos_out = old->pos;
@@ -304,13 +412,16 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
             s_span = 0L;
             s_cal_ok = 0U;
             s_radar_en = 0U;
+            s_radar_sens = 0U;
             s_target_deg = TRUTH_TARGET_DEF;
+            s_auto_close_s = TRUTH_AUTO_CLOSE_DEF_S;
             s_have_saved_base = 0U;
             s_home_needed = 0U;
             if (pos_out != NULL)    *pos_out = 0L;
             if (span_out != NULL)   *span_out = 0L;
             if (cal_ok_out != NULL) *cal_ok_out = 0U;
         }
+        } /* else: brak v2 — stary layout 24 B wyzej */
     }
     s_save_armed = 0U;
 }
@@ -459,6 +570,46 @@ void truth_set_radar_en(uint8_t en, int32_t cur_pos, uint8_t busy)
     en = (uint8_t)(en != 0U);
     if (en == s_radar_en) return; /* bez zmian — nie zuzywamy flash */
     s_radar_en = en;
+    if (busy) {
+        s_save_armed = 1U;
+        s_save_pos = cur_pos;
+        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
+        return;
+    }
+    if (s_have_saved_base) {
+        truth_save_now(s_last_saved_pos);
+    } else {
+        truth_save_now(0L);
+    }
+}
+
+uint16_t truth_auto_close_s(void) { return s_auto_close_s; }
+
+void truth_set_auto_close(uint16_t s, int32_t cur_pos, uint8_t busy)
+{
+    s = ac_sanitize(s); /* tylko presety 30/120/300/600, inne = default */
+    if (s == s_auto_close_s) return; /* bez zmian — nie zuzywamy flash */
+    s_auto_close_s = s;
+    if (busy) {
+        s_save_armed = 1U;
+        s_save_pos = cur_pos;
+        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
+        return;
+    }
+    if (s_have_saved_base) {
+        truth_save_now(s_last_saved_pos);
+    } else {
+        truth_save_now(0L);
+    }
+}
+
+uint8_t truth_radar_sens(void) { return s_radar_sens; }
+
+void truth_set_radar_sens(uint8_t code, int32_t cur_pos, uint8_t busy)
+{
+    code = (code <= 2U) ? code : 0U; /* tylko presety 0/1/2 */
+    if (code == s_radar_sens) return; /* bez zmian — nie zuzywamy flash */
+    s_radar_sens = code;
     if (busy) {
         s_save_armed = 1U;
         s_save_pos = cur_pos;

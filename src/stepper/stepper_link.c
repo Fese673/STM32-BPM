@@ -19,11 +19,15 @@
 #include "stm32f1xx_hal.h"
 
 /* --- Automat LD2410C: strojenie tutaj --- */
-/* Cisza OUT (brak obecnosci) przez ten czas -> zjazd do 0 stopni. */
-#define STEPPER_AUTO_CLOSE_MS       20000U
+/* Czas ciszy OUT -> zjazd do 0 st: z truth (presety 30s/2m/5m/10m,
+ * fabrycznie 30 s; zmiana komenda SET_AUTOCLOSE 0x0E). */
 /* Pauza automatu po dowolnej komendzie z UI (HOLD odswieza co ~400 ms,
  * wiec trzymanie przycisku zawiesza automat na czas trzymania). */
 #define STEPPER_AUTO_MANUAL_HOLD_MS 1000U
+/* Kalibracja w toku (CAL_MODE z Guitiona): automat wstrzymany na czas sesji.
+ * Brak keepalive przez ten czas -> samoczynne wznowienie (safety, gdy UI
+ * padnie w trakcie kalibracji). */
+#define STEPPER_CAL_MODE_TIMEOUT_MS 30000U
 
 volatile uint32_t g_stepper_rx_cmd      = 0U;
 volatile uint32_t g_stepper_rx_bad      = 0U;
@@ -122,21 +126,23 @@ static void tx_status(void)
     wr_i32le(&pl[1], stepper_motion_pos(&s_motion));
     pl[5] = truth_calibrated() ? STEPPER_REF_FLAG_CAL_OK : 0U;
     if (truth_radar_en()) pl[5] |= STEPPER_REF_FLAG_RADAR_EN;
+    pl[5] |= (uint8_t)((truth_radar_sens() & 0x03U) << 2U); /* bity 2-3 */
     if (frame_tx_send(STEPPER_FRAME_STATUS, pl, sizeof(pl))) {
         ++g_stepper_tx_status;
     }
 }
 
 /* Rama odniesienia (prawda z truth): [zero i32][span i32][flags]
- * [homeDeg u16][targetDeg u16][speed u16] = 15 B.
- * Stary ZEGAR czyta tylko pierwsze 11 B (len-check) — zgodne wstecz. */
+ * [homeDeg u16][targetDeg u16][speed u16][autoCloseS u16] = 17 B.
+ * Stary ZEGAR czyta tylko pierwsze 11/15 B (len-check) — zgodne wstecz. */
 static void tx_ref(void)
 {
-    uint8_t pl[15];
+    uint8_t pl[17];
     wr_i32le(&pl[0], truth_zero());
     wr_i32le(&pl[4], truth_span());
     pl[8] = truth_calibrated() ? STEPPER_REF_FLAG_CAL_OK : 0U;
     if (truth_radar_en()) pl[8] |= STEPPER_REF_FLAG_RADAR_EN;
+    pl[8] |= (uint8_t)((truth_radar_sens() & 0x03U) << 2U); /* bity 2-3 */
     const uint16_t hd = truth_home_deg();
     pl[9]  = (uint8_t)(hd & 0xFFU);
     pl[10] = (uint8_t)((hd >> 8) & 0xFFU);
@@ -146,6 +152,9 @@ static void tx_ref(void)
     const uint16_t sp = truth_home_speed();
     pl[13] = (uint8_t)(sp & 0xFFU);
     pl[14] = (uint8_t)((sp >> 8) & 0xFFU);
+    const uint16_t ac = truth_auto_close_s();
+    pl[15] = (uint8_t)(ac & 0xFFU);
+    pl[16] = (uint8_t)((ac >> 8) & 0xFFU);
     if (frame_tx_send(STEPPER_FRAME_REF, pl, sizeof(pl))) {
         ++g_stepper_tx_ref;
     }
@@ -296,6 +305,26 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
         q.arg1 = (int32_t)rd_u16le(&payload[1]);  /* wybrany kat 0..360 */
         break;
 
+    case STEPPER_CMD_SET_AUTOCLOSE:
+        if (len != 3U) {   /* cmd(1) + sekundy u16(2) */
+            ++g_stepper_rx_bad;
+            (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
+            return;
+        }
+        q.cmd  = cmd;
+        q.arg1 = (int32_t)rd_u16le(&payload[1]);  /* auto-zjazd radaru (s) */
+        break;
+
+    case STEPPER_CMD_SET_RADAR_SENS:
+        if (len != 2U) {   /* cmd(1) + kod(1): 0/1/2 */
+            ++g_stepper_rx_bad;
+            (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
+            return;
+        }
+        q.cmd  = cmd;
+        q.arg1 = (int32_t)payload[1];  /* czulosc OUT radaru */
+        break;
+
     default:
         ++g_stepper_rx_bad;
         (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
@@ -366,6 +395,8 @@ void stepper_poll(void)
     static uint8_t booted = 0U;
     static uint8_t was_busy = 0U;
     static uint32_t s_last_cmd_ms = 0U;
+    static uint8_t s_cal_mode = 0U;      /* CAL_MODE z Guitiona (kalibracja) */
+    static uint32_t s_cal_mode_ms = 0U;
     stepper_cmd_t q;
 
     /* 0. Jednorazowo po starcie: oglos prawde (REF) + autonomiczny
@@ -384,7 +415,13 @@ void stepper_poll(void)
     }
     /* 1. Komendy z ringu (nie blokujemy — ruch musi byc pompowany). */
     while (cmd_pop(&q)) {
-        s_last_cmd_ms = HAL_GetTick();  /* pauza automatu LD2410C */
+        /* Pauza automatu LD2410C tylko po REALNYCH akcjach uzytkownika.
+         * Telemetria (poll STATUS/REF z Guitiona co 2 s) NIE moze pausowac
+         * automatu — inaczej zbocze OUT wpadajace w okno pauzy gubilo ruch
+         * i kolejny cykl "nie chcial jechac do gory". */
+        if (q.cmd != STEPPER_CMD_STATUS && q.cmd != STEPPER_CMD_GET_REF) {
+            s_last_cmd_ms = HAL_GetTick();
+        }
         switch (q.cmd) {
         case STEPPER_CMD_MOVE_REL:
             stepper_motion_move_rel(&s_motion, q.arg1, q.speed, q.accel);
@@ -423,6 +460,11 @@ void stepper_poll(void)
                 ++g_truth_rejected;
                 break;
             }
+            /* Kalibracja w toku: wstrzymaj automat do konca sesji (belt
+             * dla starszego Guitiona bez CAL_MODE — gasi sie po SET_SPAN
+             * /timeoucie). */
+            s_cal_mode = 1U;
+            s_cal_mode_ms = HAL_GetTick();
             stepper_motion_set_pos(&s_motion, 0L);
             if (truth_set_zero()) tx_ref();
             else ++g_truth_rejected;
@@ -480,6 +522,35 @@ void stepper_poll(void)
             tx_ref();
             break;
         }
+        case STEPPER_CMD_SET_AUTOCLOSE: {
+            /* Czas auto-zjazdu radaru (presety 30s/2m/5m/10m; walidacja
+             * w truth, inna wartosc = fabryczna 30 s).
+             * Tylko preferencja (bez ruchu); persist + echo w REF. */
+            uint16_t as = (q.arg1 < 0) ? 0U : (uint16_t)q.arg1;
+            truth_set_auto_close(as, stepper_motion_pos(&s_motion),
+                                 stepper_motion_busy(&s_motion));
+            tx_ref();
+            break;
+        }
+        case STEPPER_CMD_SET_RADAR_SENS: {
+            /* Czulosc OUT radaru (ekran radaru: WYSOKA/SREDNIA/MALA).
+             * Persist w truth + aplikacja w module (jedna sesja config
+             * w radar poll) + echo REF. Kod spoza 0/1/2 -> SREDNIA. */
+            const uint8_t code =
+                ((q.arg1 >= 0L) && (q.arg1 <= 2L)) ? (uint8_t)q.arg1 : 0U;
+            truth_set_radar_sens(code, stepper_motion_pos(&s_motion),
+                                 stepper_motion_busy(&s_motion));
+            ld2410_radar_sens_request(code);
+            tx_ref();
+            break;
+        }
+        case STEPPER_CMD_CAL_MODE:
+            /* Kalibracja w toku (Guition): wstrzymaj automat LD2410C.
+             * Bez persistencji — tylko RAM; en=0 gasi, brak odswiezen =
+             * STEPPER_CAL_MODE_TIMEOUT_MS (safety). */
+            s_cal_mode = (q.arg1 != 0L) ? 1U : 0U;
+            s_cal_mode_ms = HAL_GetTick();
+            break;
         default:
             break;
         }
@@ -488,12 +559,13 @@ void stepper_poll(void)
 #if LD2410_ENABLE
     /* 1.5. Automat LD2410C (lokalny, nieblokujacy):
      *  - zbocze OUT -> jedz do wybranego kata (truth_target_deg),
-     *  - cisza OUT >= STEPPER_AUTO_CLOSE_MS -> zjazd do 0 (raz na epizod),
+     *  - cisza OUT >= truth_auto_close_s (30s/2m/5m/10m) -> zjazd do 0,
      *  - pauza po komendzie z UI (STEPPER_AUTO_MANUAL_HOLD_MS),
      *  - radar_en OFF -> bez akcji. */
     {
         static uint8_t  s_auto_last_out = 0U;
         static uint8_t  s_auto_close_done = 0U;
+        static uint8_t  s_auto_open_pending = 0U;
         static uint32_t s_auto_out_ms = 0U;
 
         const uint32_t now = HAL_GetTick();
@@ -501,21 +573,44 @@ void stepper_poll(void)
 
         if (!truth_radar_en()) {
             s_auto_close_done = 0U;
+            s_auto_open_pending = 0U;
         } else if (truth_calibrated()) {
             const uint8_t manual =
                 ((uint32_t)(now - s_last_cmd_ms) < STEPPER_AUTO_MANUAL_HOLD_MS);
+            /* Kalibracja w toku (CAL_MODE z Guitiona): automat calkowicie
+             * wstrzymany — zaden ruch nie przeszkodzi w ustawianiu 0/90. */
+            const uint8_t cal_hold =
+                (s_cal_mode != 0U) &&
+                ((uint32_t)(now - s_cal_mode_ms) < STEPPER_CAL_MODE_TIMEOUT_MS);
+            const uint8_t pause = (uint8_t)(manual || cal_hold);
             if (out) s_auto_out_ms = now;
             if (out && !s_auto_last_out) {
                 s_auto_close_done = 0U;
-                if (!manual) {
+                if (!pause) {
                     stepper_motion_move_abs(&s_motion,
                                             truth_deg_to_steps(truth_target_deg()),
                                             (uint32_t)truth_home_speed(),
                                             (uint32_t)truth_home_accel());
+                } else if (!cal_hold) {
+                    /* Zbocze w oknie pauzy (np. krecenie reczne sprzed
+                     * chwili): nie gub go — otworz po wygasnieciu pauzy. */
+                    s_auto_open_pending = 1U;
                 }
+                /* cal_hold: zbocze ignorowane w calosci (bez pending). */
             }
-            if (!out && !manual && !s_auto_close_done &&
-                (uint32_t)(now - s_auto_out_ms) >= STEPPER_AUTO_CLOSE_MS) {
+            if (!out) {
+                s_auto_open_pending = 0U; /* wyszedl zanim pauza minela */
+            }
+            if (s_auto_open_pending && out && !pause) {
+                s_auto_open_pending = 0U;
+                stepper_motion_move_abs(&s_motion,
+                                        truth_deg_to_steps(truth_target_deg()),
+                                        (uint32_t)truth_home_speed(),
+                                        (uint32_t)truth_home_accel());
+            }
+            if (!out && !pause && !s_auto_close_done &&
+                (uint32_t)(now - s_auto_out_ms) >=
+                    ((uint32_t)truth_auto_close_s() * 1000U)) {
                 stepper_motion_move_abs(&s_motion, truth_deg_to_steps(0U),
                                         (uint32_t)truth_home_speed(),
                                         (uint32_t)truth_home_accel());

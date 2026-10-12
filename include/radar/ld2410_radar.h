@@ -56,6 +56,10 @@ public:
     bool requestEndEngineeringMode();
     bool setMaxValues(uint16_t moving, uint16_t stationary, uint16_t inactivityTimer);
     bool setGateSensitivityThreshold(uint8_t gate, uint8_t moving, uint8_t stationary);
+    /* Zapis progow czulosci WSZYSTKICH 9 bramek w JEDNEJ sesji config
+     * (enter -> 9x 0x64 z ACK -> leave) ~120-150 ms jednorazowo.
+     * Uzywane przy zmianie presetu czulosci w locie i w init. */
+    bool setGateSensitivityThresholds(const uint8_t *moving, const uint8_t *stationary);
 
 private:
     ld2410_uart_t uart_;

@@ -42,6 +42,9 @@ extern "C" {
 #define STEPPER_REF_FLAG_RADAR_EN 0x02U
 /* Bit wewnetrznego pola flags slotu flash. */
 #define TRUTH_FLAG_RADAR_EN 0x01U
+/* Bity 1-2 pola flags: preset czulosci OUT radaru (0/1/2 = SREDNIA/WYSOKA/
+ * MALA). Stare sloty maja tam 0 (home_accel=1000 / flags bez sens) -> SREDNIA. */
+#define TRUTH_FLAG_RADAR_SENS_SHIFT 1U
 
 /* Odtworzenie z flash. Wywolac raz w stepper_init() PRZED startem
  * petli. Zwraca przez wskazniki: pos (do wstawienia w licznik),
@@ -105,11 +108,25 @@ int32_t truth_home_steps(void);
 uint8_t truth_radar_en(void);
 void truth_set_radar_en(uint8_t en, int32_t cur_pos, uint8_t busy);
 
+/* Preset czulosci OUT radaru (0=SREDNIA, 1=WYSOKA, 2=MALA; inna = 0).
+ * Persist w bitach 1-2 pola flags slotu (ten sam layout — stare sloty
+ * czytaja sie jako SREDNIA). Zapis jak SET_SPEED. Uzywane przez
+ * ld2410_radar_init/request (progi bramek w wrapperze radaru). */
+uint8_t truth_radar_sens(void);
+void truth_set_radar_sens(uint8_t code, int32_t cur_pos, uint8_t busy);
+
 /* WYBRANY kat z UI (single-click presetu; persist we flash). Sluzy
  * automatowi LD2410C (otwarcie) i wraca echem REF do HMI. Default 45
  * (0xFFFF/poza zakresem w slocie = default). Zapis jak SET_SPEED. */
 uint16_t truth_target_deg(void);
 void truth_set_target(uint16_t deg, int32_t cur_pos, uint8_t busy);
+
+/* Czas auto-zjazdu radaru (cisza OUT -> 0 st), sekundy. Tylko presety
+ * 30/120/300/600 (UI); inna wartosc = fabryczna 30. Persist we flash
+ * (pole auto_close_s slotu v3; stare sloty migruja z defaultem).
+ * Zapis jak SET_HOME: od razu na postoju, odroczony w ruchu. */
+uint16_t truth_auto_close_s(void);
+void truth_set_auto_close(uint16_t s, int32_t cur_pos, uint8_t busy);
 
 /* Diagnostyka BEZ UART (podglad w debuggerze). */
 extern volatile uint32_t g_truth_saves;

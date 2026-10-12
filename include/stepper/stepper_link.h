@@ -37,9 +37,13 @@
  *   0xB3  STM32 -> ZEGAR DONE      payload = [pos int32 LE]             (4 B)
  *     DONE przychodzi DOKLADNIE RAZ po zakonczeniu ruchu (krawedz).
  *   0xB4  STM32 -> ZEGAR REF       payload = [zero int32 LE][span int32 LE]
- *                                          [flags: bit0=calOk]
- *                                          [homeDeg u16 LE]               (11 B)
- *     Wysylane po GET_REF, po SET_ZERO/SET_SPAN/SET_HOME i raz po starcie.
+ *                                          [flags: bit0=calOk, bit1=radarEn,
+ *                                           bity2-3=czulosc OUT radaru]
+ *                                          [homeDeg u16 LE][targetDeg u16 LE]
+ *                                          [speed u16 LE][autoCloseS u16 LE] (17 B)
+ *     Stary ZEGAR czyta krotszy prefiks (len-check) — zgodne wstecz.
+ *     Wysylane po GET_REF, po SET_ZERO/SET_SPAN/SET_HOME/SET_AUTOCLOSE/
+ *     SET_RADAR_SENS i raz po starcie.
  *     Prawda o ramie zyje w stepper_truth (flash STM32) — ZEGAR nie liczy mapy.
  *
  * KONTRAKT DLA ESP32 (do dopisania PO STRONIE ZEGAR, nie tu):
@@ -84,6 +88,16 @@ extern "C" {
 #define STEPPER_CMD_SET_HOME  0x0AU
 #define STEPPER_CMD_SET_RADAR 0x0BU   /* cmd(1) + en(1): automat LD2410C */
 #define STEPPER_CMD_SET_TARGET 0x0CU  /* cmd(1) + deg u16 LE: wybrany kat (flash) */
+#define STEPPER_CMD_CAL_MODE  0x0DU   /* cmd(1) + en(1): kalibracja w toku —
+                                       * wstrzymaj automat LD2410C (bez persistencji;
+                                       * auto-timeout 30 s bez odswiezen; en=0 gasi) */
+#define STEPPER_CMD_SET_AUTOCLOSE 0x0EU /* cmd(1) + sekundy u16 LE: czas auto-zjazdu
+                                       * radaru (presety 30/120/300/600; inne = fabryczny
+                                       * 30 s). Persist we flash truth + push 0xB4 */
+#define STEPPER_CMD_SET_RADAR_SENS 0x0FU /* cmd(1) + kod(1): czulosc OUT radaru
+                                       * (0=SREDNIA, 1=WYSOKA, 2=MALA; inne = SREDNIA).
+                                       * Persist (bity 1-2 flags truth) + aplikacja
+                                       * w module + echo w 0xB2/0xB4 (bity 2-3 flags) */
 
 /* Rejestruje handler 0xB1 + zeruje ring. Wywolac raz w main()
  * PO frame_protocol_init(). Nie tyka UART ani innych handlerow. */

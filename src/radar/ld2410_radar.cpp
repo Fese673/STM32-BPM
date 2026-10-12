@@ -655,3 +655,51 @@ bool ld2410_radar::setGateSensitivityThreshold(uint8_t gate, uint8_t moving, uin
     leave_configuration_mode_();
     return false;
 }
+
+bool ld2410_radar::setGateSensitivityThresholds(const uint8_t *moving, const uint8_t *stationary)
+{
+    if (moving == nullptr || stationary == nullptr) {
+        return false;
+    }
+    if (enter_configuration_mode_()) {
+        radar_delay_ms(50);
+        bool ok = true;
+        for (uint8_t gate = 0U; gate < 9U; ++gate) {
+            begin_command_(0x64);
+            send_command_preamble_();
+            uart_.write(0x14);
+            uart_.write(0x00);
+            uart_.write(0x64);
+            uart_.write(0x00);
+            uart_.write(0x00);
+            uart_.write(0x00);
+            uart_.write(gate);
+            uart_.write(0x00);
+            uart_.write(0x00);
+            uart_.write(0x00);
+            uart_.write(0x01);
+            uart_.write(0x00);
+            uart_.write(moving[gate]);
+            uart_.write(0x00);
+            uart_.write(0x00);
+            uart_.write(0x00);
+            uart_.write(0x02);
+            uart_.write(0x00);
+            uart_.write(stationary[gate]);
+            uart_.write(0x00);
+            uart_.write(0x00);
+            uart_.write(0x00);
+            send_command_postamble_();
+            if (!wait_for_ack_(0x64, radar_uart_command_timeout_)) {
+                ok = false;
+                break;
+            }
+        }
+        radar_delay_ms(50);
+        leave_configuration_mode_();
+        return ok;
+    }
+    radar_delay_ms(50);
+    leave_configuration_mode_();
+    return false;
+}

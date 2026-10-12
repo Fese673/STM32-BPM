@@ -38,6 +38,7 @@
 #include "pwm/pwm_reg.h"
 #include "comm/brightness_handler.h"
 #include "stepper/stepper_link.h"
+#include "stepper/stepper_truth.h"
 
 /* USER CODE END Includes */
 
@@ -121,7 +122,7 @@ int main(void)
 
     // Radar LD2410 na USART2 (PA2/PA3, 256000 baud) + pin OUT (PB5)
 #if LD2410_ENABLE
-    ld2410_radar_init();
+    ld2410_radar_init(truth_radar_sens());   // preset czulosci z flash truth
     radar_out_init();
 #endif
 
