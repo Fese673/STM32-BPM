@@ -92,7 +92,7 @@ extern "C" {
                                        * wstrzymaj automat LD2410C (bez persistencji;
                                        * auto-timeout 30 s bez odswiezen; en=0 gasi) */
 #define STEPPER_CMD_SET_AUTOCLOSE 0x0EU /* cmd(1) + sekundy u16 LE: czas auto-zjazdu
-                                       * radaru (presety 30/120/300/600; inne = fabryczny
+                                       * radaru (presety 30/180/600/2700; inne = fabryczny
                                        * 30 s). Persist we flash truth + push 0xB4 */
 #define STEPPER_CMD_SET_RADAR_SENS 0x0FU /* cmd(1) + kod(1): czulosc OUT radaru
                                        * (0=SREDNIA, 1=WYSOKA, 2=MALA; inne = SREDNIA).

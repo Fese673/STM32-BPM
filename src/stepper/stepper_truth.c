@@ -47,7 +47,7 @@ typedef struct {
     uint16_t flags;
     uint16_t home_deg;   /* cel powrotu po resecie 0..360 */
     uint16_t target_deg; /* WYBRANY kat (UI/automat), 0xFFFF = brak -> default */
-    /* Czas auto-zjazdu radaru (sekundy). Tylko presety 30/120/300/600
+    /* Czas auto-zjazdu radaru (sekundy). Tylko presety 30/180/600/2700
      * (walidacja przy odczycie i zapisie; inna wartosc = fabryczna 30). */
     uint16_t auto_close_s;
     uint16_t crc;
@@ -80,7 +80,7 @@ typedef struct {
 } truth_slot_old_t;
 
 #define TRUTH_TARGET_DEF 45U
-/* Fabryczny czas auto-zjazdu radaru (s). Presety UI: 30/120/300/600. */
+/* Fabryczny czas auto-zjazdu radaru (s). Presety UI: 30/180/600/2700. */
 #define TRUTH_AUTO_CLOSE_DEF_S 30U
 
 static uint32_t s_seq = 0U;
@@ -190,9 +190,9 @@ static uint16_t ac_sanitize(uint16_t s)
 {
     switch (s) {
     case 30U:
-    case 120U:
-    case 300U:
+    case 180U:
     case 600U:
+    case 2700U:
         return s;
     default:
         return TRUTH_AUTO_CLOSE_DEF_S;
@@ -587,7 +587,7 @@ uint16_t truth_auto_close_s(void) { return s_auto_close_s; }
 
 void truth_set_auto_close(uint16_t s, int32_t cur_pos, uint8_t busy)
 {
-    s = ac_sanitize(s); /* tylko presety 30/120/300/600, inne = default */
+    s = ac_sanitize(s); /* tylko presety 30/180/600/2700, inne = default */
     if (s == s_auto_close_s) return; /* bez zmian — nie zuzywamy flash */
     s_auto_close_s = s;
     if (busy) {

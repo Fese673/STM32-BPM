@@ -559,7 +559,7 @@ void stepper_poll(void)
 #if LD2410_ENABLE
     /* 1.5. Automat LD2410C (lokalny, nieblokujacy):
      *  - zbocze OUT -> jedz do wybranego kata (truth_target_deg),
-     *  - cisza OUT >= truth_auto_close_s (30s/2m/5m/10m) -> zjazd do 0,
+     *  - cisza OUT >= truth_auto_close_s (30s/3m/10m/45m) -> zjazd do 0,
      *  - pauza po komendzie z UI (STEPPER_AUTO_MANUAL_HOLD_MS),
      *  - radar_en OFF -> bez akcji. */
     {

@@ -122,7 +122,7 @@ uint16_t truth_target_deg(void);
 void truth_set_target(uint16_t deg, int32_t cur_pos, uint8_t busy);
 
 /* Czas auto-zjazdu radaru (cisza OUT -> 0 st), sekundy. Tylko presety
- * 30/120/300/600 (UI); inna wartosc = fabryczna 30. Persist we flash
+ * 30/180/600/2700 (UI); inna wartosc = fabryczna 30. Persist we flash
  * (pole auto_close_s slotu v3; stare sloty migruja z defaultem).
  * Zapis jak SET_HOME: od razu na postoju, odroczony w ruchu. */
 uint16_t truth_auto_close_s(void);
