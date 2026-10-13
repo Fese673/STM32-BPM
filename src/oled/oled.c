@@ -161,6 +161,10 @@ void OLED_Kick(void)
                              (uint8_t *)&oled_cache[0], 128) == HAL_OK)
     {
         oled_it_active = 1;
+        /* Znacznik startu od razu — bez tego watchdog widzi "0" i na
+         * starcie (up > 200 ms) robi falszywy recovery zanim ISR zdazy
+         * ustawic tick po zakonczeniu transferu. */
+        oled_it_started_tick = HAL_GetTick();
     }
 }
 
@@ -320,7 +324,7 @@ void OLED_Recover(void)
 void OLED_Set_Pos(uint8_t x, uint8_t y)
 {
     point_x = x;
-    point_y = y;
+    point_y = (y > 7U) ? 7U : y;   /* twarde 0..7 — ochrona oled_cache[8][128] */
 }
 
 
@@ -342,11 +346,19 @@ void OLED_ShowString(uint8_t x, uint8_t y, const char *str)
     uint8_t c = 0, i = 0;
     while (*str != '\0')
     {
-        c = *str - ' '; 
-        if (x > Max_Column - 1)
+        c = (uint8_t)(*str - ' ');
+        /* Znaki spoza fontu (F6x8 ma 92 wpisy: ' '..'z') rysujemy jako
+         * spacje — inaczej indeks OOB (np. UTF-8 diakrytyki). */
+        if (c > 90U)
+            c = 0U;
+        /* Znak 6 px nie zmiesci sie w wierszu: przejdz do nastepnego.
+         * Poza 8. strona konczymy — zero zapisow poza oled_cache. */
+        if (x > Max_Column - 6)
         {
             x = 0;
             y++;
+            if (y > 7)
+                return;
         }
         OLED_Set_Pos(x, y);
         for (i = 0; i < 6; i++)

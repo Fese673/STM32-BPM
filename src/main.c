@@ -48,12 +48,13 @@
 I2C_HandleTypeDef  hi2c1;    // I2C1 dla OLED
 I2C_HandleTypeDef  hi2c2;    // I2C2 dla MAX30102
 TIM_HandleTypeDef  htim3;    // TIM3: buzzer PB0 (CH3) + jasnosc 7-seg PA6 (CH1)
-UART_HandleTypeDef huart1;   // UART1 PA9/PA10 -> ZEGAR ESP32 (ramki COBS, 9600)
+UART_HandleTypeDef huart1;   // UART1 PA9/PA10 -> ZEGAR ESP32 (ramki COBS, 19200)
 UART_HandleTypeDef huart2;   // UART2 PA2/PA3 -> radar LD2410 (256000)
 
 /* USER CODE BEGIN PV */
 //  Flaga wysylania BPM (tylko raz na pik)
 static uint8_t last_diff_state = 0;  // Pamietaj poprzedni stan diff
+static uint8_t last_hr_present = 0;  // 1 = ostatnio BPM > 0 (ramka "brak palca")
 
 /* USER CODE END PV */
 
@@ -71,7 +72,7 @@ static void i2c_ctrl_poll(void);
 
 
 /* USER CODE BEGIN 0 */
-// USART1 (PA9/PA10) @ 9600: kanal ramek COBS+CRC16 <-> ZEGAR ESP32
+// USART1 (PA9/PA10) @ 19200: kanal ramek COBS+CRC16 <-> ZEGAR ESP32
 // USART2 (PA2/PA3) @ 256000: radar LD2410
 // CH340 niepodłączony — PA9 idzie bezpośrednio do ZEGAR GPIO16.
 /* USER CODE END 0 */
@@ -113,7 +114,7 @@ int main(void)
 
     HAL_Delay(200); // stabilizacja zasilania
 
-    // UART1 — kanal ramek COBS do ZEGAR ESP32 (PA9/PA10, 9600 baud)
+    // UART1 — kanal ramek COBS do ZEGAR ESP32 (PA9/PA10, 19200 baud)
     uart1_init();
     frame_protocol_init();
     brightness_handler_init();   // ramka 0xB0 -> PWM_Reg_SetDuty
@@ -192,6 +193,18 @@ static void i2c_ctrl_poll(void)
 
     if (max30102_zombie)
     {
+        /* Re-probe zyje w max30102_cal() (recover I2C2 + Detect + init
+         * co 2 s). Wczesniej cal() nie bylo wolane w zombie — po tripie
+         * czujnik nigdy nie wracal (wykres ginal do konca). */
+        max30102_cal();
+    }
+
+    if (max30102_zombie)
+    {
+        if (last_hr_present) {
+            (void)frame_tx_bpm(0U, 0U);   /* czujnik padl: wyczysc BPM/SpO2 na GUTION */
+            last_hr_present = 0U;
+        }
 #if OLED_ENABLE
         /* Fallback bez czujnika: ekran ma zyc — myslniki, plaski
          * przewijany wykres i napis. */
@@ -267,24 +280,16 @@ static void i2c_ctrl_poll(void)
         }
 
         (void)frame_tx_ppg(diff);
+
+        /* Palec zdjety: heartRate==0, a zbocze "diff>50" juz nie wystapi —
+         * wyslij jawnie 0, inaczej GUTION trzyma ostatni BPM/SpO2. */
+        uint8_t hrPresent = (heartReat > 0U) ? 1U : 0U;
+        if (last_hr_present && !hrPresent) {
+            (void)frame_tx_bpm(0U, 0U);
+        }
+        last_hr_present = hrPresent;
     }
 
-#if OLED_ENABLE
-    /* TEMP-DIAG: co silnik dostal (jeden test, potem usunac). */
-    {
-        uint8_t dcmd = 0U, dbusy = 0U;
-        uint16_t dspd = 0U;
-        uint32_t drxn = 0U;
-        int32_t dpos = 0L;
-        char line[22];
-        stepper_diag(&dcmd, &dspd, &drxn, &dpos, &dbusy);
-        snprintf(line, sizeof(line), "C%u S%u N%lu", (unsigned)dcmd,
-                 (unsigned)dspd, (unsigned long)drxn);
-        OLED_ShowString(0, 0, line);
-        snprintf(line, sizeof(line), "P%ld B%u", (long)dpos, (unsigned)dbusy);
-        OLED_ShowString(0, 1, line);
-    }
-#endif
 }
 
 
@@ -425,7 +430,7 @@ static void MX_USART1_UART_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
     huart1.Instance        = USART1;
-    huart1.Init.BaudRate   = 9600;
+    huart1.Init.BaudRate   = 19200;
     huart1.Init.WordLength = UART_WORDLENGTH_8B;
     huart1.Init.StopBits   = UART_STOPBITS_1;
     huart1.Init.Parity     = UART_PARITY_NONE;

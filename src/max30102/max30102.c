@@ -53,12 +53,37 @@ static void max_note(HAL_StatusTypeDef st)
     }
 }
 
-/* Odbudowa peryferium I2C2 (DeInit/ReInit). Flaga BUSY STM32F1 potrafi
- * zatrzasnac sie na starcie z zasilania (glitch na rampie) i nie puszcza
- * az do resetu peryferium — zaden timeout tego nie wyczysci, a NRST tak
- * (stad "po resecie dziala"). Wywolywac przed re-probe. */
+/* Odbudowa magistrali I2C2:
+ * 1) Slave (MAX30102) moze trzymac SDA nisko po przerwanym transferze —
+ *    DeInit/Init mastera tego nie zwolni, trzeba wygenerowac recznie
+ *    do 9 impulsow SCL + STOP (open-drain, jak prawdziwy master I2C).
+ * 2) Potem DeInit/Init peryferium (F1: flaga BUSY potrafi sie zatrzasnac
+ *    i zaden timeout tego nie wyczysci, a NRST tak).
+ * Wywolywac przed re-probe. */
 static void max_i2c_recover(void)
 {
+    GPIO_InitTypeDef gpio = {0};
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    gpio.Pin   = GPIO_PIN_10 | GPIO_PIN_11;   /* SCL | SDA */
+    gpio.Mode  = GPIO_MODE_OUTPUT_OD;
+    gpio.Pull  = GPIO_PULLUP;
+    gpio.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOB, &gpio);
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_SET);   /* SDA w gore */
+    for (uint8_t i = 0U; i < 9U; i++) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_RESET);
+        for (volatile uint8_t d = 0U; d < 30U; d++) { __NOP(); }
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10, GPIO_PIN_SET);
+        for (volatile uint8_t d = 0U; d < 30U; d++) { __NOP(); }
+    }
+    /* STOP: SDA 0->1 przy SCL wysokim */
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_RESET);
+    for (volatile uint8_t d = 0U; d < 30U; d++) { __NOP(); }
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_11, GPIO_PIN_SET);
+    for (volatile uint8_t d = 0U; d < 30U; d++) { __NOP(); }
+
     HAL_I2C_DeInit(&hi2c2);
     HAL_I2C_Init(&hi2c2);
 }
@@ -103,7 +128,7 @@ void max30102_init(void)
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
 
     /* Light brightness */
-    data = 0x47;   // 27mA bezpieczne i optymalne 
+    data = 0x47;   // 0x47 x 0.2 mA ~= 14 mA — bezpieczne i optymalne
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_LED_PLUSE_AMPLITUDE_1,
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_LED_PLUSE_AMPLITUDE_2,
@@ -119,6 +144,13 @@ void max30102_init(void)
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_OVERFLOW_COUNTER,
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
     HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_FIFO_READ_POINTER,
+                      I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
+
+    /* FIFO rollover ON (bit 4). Bez tego po zapchaniu 32 probek FIFO
+     * przestaje sie zapisywac (WR==RD), sterownik widzi 0 probek i juz
+     * nigdy nic nie odczyta — BPM/SpO2 umiera do resetu. */
+    data = 0x10;
+    HAL_I2C_Mem_Write(&hi2c2, MAX30102_ADDR_WRITE, RES_FIFO_CONFIGURATION,
                       I2C_MEMADD_SIZE_8BIT, &data, 1, 10);
 
     /* interrupt status clear */
@@ -195,9 +227,9 @@ SAMPLE sampleBuff[BUFF_SIZE];
 uint8_t  heartRate = 0;
 uint8_t  spo2      = 0;
 
-uint16_t redAC  = 0;
+uint32_t redAC  = 0;
 uint32_t redDC  = 0;
-uint16_t iRedAC = 0;
+uint32_t iRedAC = 0;
 uint32_t iRedDC = 0;
 
 #define FILTER_LEVEL 8 /* Filter Level */
@@ -231,8 +263,8 @@ void buffInsert(SAMPLE s)
     sampleBuff[0].iRed = s.iRed;
 }
 
-void calAcDc(uint16_t *rac, uint32_t *rdc,
-             uint16_t *iac, uint32_t *idc)
+void calAcDc(uint32_t *rac, uint32_t *rdc,
+             uint32_t *iac, uint32_t *idc)
 {
     uint32_t rMax = sampleBuff[0].red;
     uint32_t rMin = sampleBuff[0].red;
@@ -288,6 +320,7 @@ void max30102_cal(void)
 
     static uint8_t  eachBeatSampleCount      = 0;   // How many samples did this heartbeat endure?
     static uint8_t  lastTenBeatSampleCount[10];     // Number of samples for each of the past ten heartbeats
+    static uint8_t  beatsCollected           = 0;   // How many beats are currently in the buffer
     static uint32_t last_iRed                = 0;   // The previous infrared value, filtered
 
     for (i = 0; i < unreadSampleCount; i++)
@@ -297,6 +330,10 @@ void max30102_cal(void)
             heartRate      = 0;
             spo2           = 0;
             eachSampleDiff = 0;
+            eachBeatSampleCount = 0;
+            beatsCollected = 0;
+            for (ii = 0; ii < 10; ii++)
+                lastTenBeatSampleCount[ii] = 0;
             continue;
         }
 
@@ -323,11 +360,22 @@ void max30102_cal(void)
 
             lastTenBeatSampleCount[0] = eachBeatSampleCount;
 
-            uint32_t totalTime = 0;
-            for (ii = 0; ii < 10; ii++)
-                totalTime += lastTenBeatSampleCount[ii];
+            if (beatsCollected < 255U) ++beatsCollected;
 
-            heartRate = (uint8_t)(60.0f * 10.0f / 0.02f / (float)totalTime);
+            /* Pierwszy wpis to odcinek od wlozenia palca, nie pelny
+             * interwal RR — usredniamy dopiero od 2. uderzenia. */
+            uint8_t validBeats = (beatsCollected > 10U)
+                                 ? 10U : (uint8_t)(beatsCollected - 1U);
+
+            if (validBeats > 0U)
+            {
+                uint32_t totalTime = 0;
+                for (ii = 0; ii < validBeats; ii++)
+                    totalTime += lastTenBeatSampleCount[ii];
+
+                heartRate = (uint8_t)(60.0f * (float)validBeats / 0.02f / (float)totalTime);
+            }
+
             eachBeatSampleCount = 0;
         }
 

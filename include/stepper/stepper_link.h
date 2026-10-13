@@ -48,7 +48,7 @@
  *
  * KONTRAKT DLA ESP32 (do dopisania PO STRONIE ZEGAR, nie tu):
  *   ZEGAR pakuje MOVE:kroki,speed,accel z apki PC w ramke 0xB1 i forwarduje
- *   ja soft-UARTem 9600; DONE 0xB3 / STATUS 0xB2 wracaja ta sama droga.
+ *   ja soft-UARTem 19200; DONE 0xB3 / STATUS 0xB2 wracaja ta sama droga.
  *   Ten plik po stronie STM32 jest gotowy — ESP32 dopiszesz pozniej.
  *
  * Watek: handler ramki (kontekst main loop) TYLKO kolejkuje komende
@@ -105,10 +105,6 @@ void stepper_init(void);
 
 /* Bare-metal poll steppera. Wolac co iteracje superloop (nieblokujacy). */
 void stepper_poll(void);
-
-/* TEMP-DIAG: ostatnia komenda / predkosc / licznik RX / pozycja / busy. */
-void stepper_diag(uint8_t *cmd, uint16_t *speed, uint32_t *rxn,
-                  int32_t *pos, uint8_t *busy);
 
 /* Liczniki do debugowania BEZ UART (DEBUG_LOG nie wolno — pisze na UART1
  * i rozsypalby strumien COBS!). Podglad w debuggerze. */

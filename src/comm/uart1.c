@@ -2,7 +2,7 @@
  * ******************************************************************************
  * File Name          : uart1.c
  * Description        : UART1 full-duplex driver.
- *                      PA9(TX) -> ZEGAR GPIO16, 9600 baud
+ *                      PA9(TX) -> ZEGAR GPIO16, 19200 baud
  *                      PA10(RX) <- ZEGAR GPIO17
  *
  *                      TX: ring buffer + ISR (TXE).

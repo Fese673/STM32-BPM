@@ -176,7 +176,7 @@ void ld2410_radar_poll(void)
     if (radar_out_present()) presence |= 0x08U;
 
     /* 250 ms (nie 1 s): slupki bramek na ekranie maja byc plynne.
-     * ~32 B na drucie przy 9600 = ~3% pasma. */
+     * ~37 B na drucie 4x/s przy 19200 = ~8% pasma. */
     if ((presence != last_presence) || ((now - last_send_ms) >= 250U)) {
         (void)frame_tx_radar(presence, movDist, movEnergy,
                              statDist, statEnergy, detDist,

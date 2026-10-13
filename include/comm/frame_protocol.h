@@ -14,9 +14,13 @@
  *   kStmTypePpg         0xA0  STM32→ZEGAR  payload=[diff_lo, diff_hi]
  *   kStmTypeBpm         0xA1  STM32→ZEGAR  payload=[bpm, spo2]
  *   kStmTypeAck         0xA2  STM32→ZEGAR  payload=[ok, relatedType]
- *   kStmTypeRadar       0xA3  STM32→ZEGAR  payload 26 B:
+ *   kStmTypeRadar       0xA3  STM32→ZEGAR  payload 28 B (append-only wzgledem 26 B):
  *                                          [presence,mov_lo,mov_hi,movE,stat_lo,stat_hi,statE,detect,
- *                                           movGate0..8,statGate0..8]
+ *                                           movGate0..8,statGate0..8, detect_lo,detect_hi]
+ *                                          [7] = legacy dolny bajt detect (max 600 cm
+ *                                          nie miesci sie w 1 B); pelny dystans u16 LE
+ *                                          na [26..27]. Stare parsery czytajace 26 B
+ *                                          dzialaja bez zmian (off 0..25 nietkniete).
  *                                          presence: b0=ktos,b1=ruch,b2=stan,b3=OUT(PB5),
  *                                          b7=LINK-BAD (radar martwy),
  *                                          b6=GARBAGE (bajty na PA3, brak ramek: zly baud?)

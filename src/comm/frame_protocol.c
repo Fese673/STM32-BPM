@@ -115,8 +115,11 @@ static void try_decode_assembly(void)
         return;
     }
 
-    /* Bajty [0..len-1] = ciało COBS (bez delimiterów). */
-    uint8_t raw[FRAME_MAX_RAW];
+    /* Bajty [0..len-1] = ciało COBS (bez delimiterów).
+     * Bufor na MAX WIRE (nie MAX_RAW): zly/smieciowy assembly moze miec
+     * do sizeof(s_assembly) bajtow, a cobs_decode pisze do wyjscia do
+     * "tyle, ile wejscia" — MAX_RAW dawal overflow stosu o kilka bajtow. */
+    uint8_t raw[FRAME_MAX_WIRE];
     size_t  raw_len = cobs_decode(s_assembly, s_assembly_len, raw);
     if (raw_len == 0U) {
         ++g_frame_rx_frames_bad;
@@ -220,7 +223,11 @@ bool frame_tx_radar(uint8_t presence, uint16_t movDist, uint8_t movEnergy,
                     uint16_t statDist, uint8_t statEnergy, uint16_t detectDist,
                     const uint8_t *movGates, const uint8_t *statGates)
 {
-    uint8_t payload[26];
+    /* Layout 26 B (legacy) + append-only 2 B: pelny detectDist u16 LE na koncu.
+     * Offsety 0..25 bez zmian (stare parsery ZEGAR dzialaja jak dotad:
+     * [7] = dolny bajt detect). LD2410C ma zasieg do 600 cm, wiec 1 B
+     * nie wystarcza (255..600 cm zawijalo sie mod 256). */
+    uint8_t payload[28];
     payload[0] = presence;
     payload[1] = (uint8_t)(movDist & 0xFFU);
     payload[2] = (uint8_t)((movDist >> 8U) & 0xFFU);
@@ -228,11 +235,13 @@ bool frame_tx_radar(uint8_t presence, uint16_t movDist, uint8_t movEnergy,
     payload[4] = (uint8_t)(statDist & 0xFFU);
     payload[5] = (uint8_t)((statDist >> 8U) & 0xFFU);
     payload[6] = statEnergy;
-    payload[7] = (uint8_t)(detectDist & 0xFFU);  /* detect < 800 cm, 1 B wystarcza */
+    payload[7] = (uint8_t)(detectDist & 0xFFU);  /* legacy: dolny bajt (stare parsery) */
     for (uint8_t g = 0U; g < 9U; g++) {
         payload[8U + g]  = (movGates  != NULL) ? movGates[g]  : 0U;
         payload[17U + g] = (statGates != NULL) ? statGates[g] : 0U;
     }
+    payload[26] = (uint8_t)(detectDist & 0xFFU);       /* pelny detectDist u16 LE */
+    payload[27] = (uint8_t)((detectDist >> 8U) & 0xFFU);
     return frame_tx_send(FRAME_TYPE_RADAR, payload, sizeof(payload));
 }
 
