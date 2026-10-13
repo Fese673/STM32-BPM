@@ -206,13 +206,12 @@ static void i2c_ctrl_poll(void)
             last_hr_present = 0U;
         }
 #if OLED_ENABLE
-        /* Fallback bez czujnika: ekran ma zyc — myslniki, plaski
-         * przewijany wykres i napis. */
+        /* Fallback bez czujnika: ekran ma zyc — myslniki i plaski
+         * przewijany wykres. */
         uint8_t d;
         for (d = 0; d < 6; d++) OLED_showNum(d, 10);
         OLED_drawChart(0.0f);
         OLED_showHeart(1);
-        OLED_ShowString(0, 0, "BRAK CZUJNIKA ");
 #endif
     }
     else
@@ -480,8 +479,8 @@ void MX_USART2_UART_Init(void)
 static void MX_I2C1_Init(void)
 {
     hi2c1.Instance             = I2C1;                    // Wskazanie dokładne sprzętu na I2C1 (0x40005400)
-    hi2c1.Init.ClockSpeed      = 400000;                  // Ustawienie prędkości 400kHz w Cube MX
-    hi2c1.Init.DutyCycle       = I2C_DUTYCYCLE_16_9;      // SCL high : low = 16 : 9
+    hi2c1.Init.ClockSpeed      = 100000;                  // TEST: 100 kHz (bylo 400 kHz) — eksperyment stabilnosci
+    hi2c1.Init.DutyCycle       = I2C_DUTYCYCLE_2;         // Standard mode: duty 2 (przy 100 kHz i tak ignorowane)
     hi2c1.Init.OwnAddress1     = 0;                       // Własny adres urządzenia (master) adres niepotrzebny dla mastera (0)        
     hi2c1.Init.AddressingMode  = I2C_ADDRESSINGMODE_7BIT; // Tryb adresowania ustaiwany zawsze tak samo
     hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE; // Wyłączenie drugiego adresu (bez reakcji)

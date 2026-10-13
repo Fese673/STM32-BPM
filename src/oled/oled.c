@@ -19,7 +19,7 @@
 #define OLED_NUM_F 0x20
 #define OLED_NUM_G 0x40
 
-#define OLED_I2C_TIMEOUT_MS 10      /* 1 B @400 kHz to ~30 us; 10 ms to spory zapas */
+#define OLED_I2C_TIMEOUT_MS 10      /* 1 B @100 kHz to ~90 us; 10 ms to spory zapas */
 #define OLED_I2C_MAX_RETRIES 3
 #define OLED_IT_WAIT_TIMEOUT_MS 10  /* limit spina na koniec transferu IT */
 #define OLED_DET_TRIALS_BOOT 2U     /* sondowanie dokładne (start) */
@@ -232,6 +232,38 @@ static uint8_t oled_probe(uint8_t trials, uint8_t timeout_ms)
     return 0;
 }
 
+/* Odbudowa magistrali I2C1 — odpowiednik max_i2c_recover() z MAX30102:
+ * slave (SSD1306 albo cokolwiek na bagnie) moze po glitchu trzymac SDA
+ * nisko; DeInit/Init mastera tego NIE zwolni i recovery kreci sie
+ * w miejscu (ekran zamrozony do resetu). Recznie: 9 impulsow SCL +
+ * STOP (open-drain), potem oddanie pinow peryferium (AF). */
+static void oled_i2c_bus_recover(void)
+{
+    GPIO_InitTypeDef gi = {0};
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    gi.Pin   = GPIO_PIN_6 | GPIO_PIN_7;   /* SCL | SDA */
+    gi.Mode  = GPIO_MODE_OUTPUT_OD;
+    gi.Pull  = GPIO_PULLUP;
+    gi.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOB, &gi);
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);   /* SDA w gore */
+    for (uint8_t i = 0U; i < 9U; i++) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+        for (volatile uint8_t d = 0U; d < 30U; d++) { __NOP(); }
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+        for (volatile uint8_t d = 0U; d < 30U; d++) { __NOP(); }
+    }
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET); /* STOP: SDA 0->1 */
+    for (volatile uint8_t d = 0U; d < 30U; d++) { __NOP(); }
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
+    for (volatile uint8_t d = 0U; d < 30U; d++) { __NOP(); }
+
+    gi.Mode = GPIO_MODE_AF_OD;            /* oddaj piny I2C1 */
+    HAL_GPIO_Init(GPIOB, &gi);
+}
+
 uint8_t OLED_Detect(void)
 {
     return oled_probe(OLED_DET_TRIALS_BOOT, OLED_DET_TIMEOUT_BOOT_MS);
@@ -273,6 +305,11 @@ void OLED_Recover(void)
             oled_i2c_error = 1;
             return;
         }
+
+        /* Najpierw fizycznie odblokuj magistrale (SDA mogl trzymac slave
+         * albo glitch) — inaczej probe zawsze padnie, a DeInit/Init
+         * niczego nie zwolni. */
+        oled_i2c_bus_recover();
 
         /* Lekkie sondowanie (polling, bez re-initu): brak modułu
          * = szybki powrót, task spróbuje w następnym oknie. */
