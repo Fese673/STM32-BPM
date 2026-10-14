@@ -507,7 +507,14 @@ static void truth_pref_commit(int32_t cur_pos, uint8_t busy)
         s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
         return;
     }
-    truth_save_now(s_have_saved_base ? s_last_saved_pos : cur_pos);
+    if (!truth_save_now(s_have_saved_base ? s_last_saved_pos : cur_pos) &&
+        s_cfg_dirty) {
+        /* Flash odmowil — uzbroj ponowienie (inaczej zmiana czekalaby na
+         * nastepny koniec ruchu/zmiane preferencji). */
+        s_save_armed = 1U;
+        s_save_pos = cur_pos;
+        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
+    }
 }
 
 uint8_t truth_home_needed(void)

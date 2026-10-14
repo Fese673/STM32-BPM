@@ -58,6 +58,14 @@ static uint8_t s_cmd_count = 0U;
 static uint8_t s_cmd_ready = 0U;
 static stepper_motion_t s_motion;
 
+/* Stan akcji UI wspoldzielony przez dispatch (STOP natychmiast, poza ringiem)
+ * i petle stepper_poll — STOP z Guitiona nie przechodzi juz przez ring,
+ * wiec bez tego pauza automatu / gaszenie dimu nie dzialalyby przy STOPie. */
+static uint32_t s_last_cmd_ms = 0U;     /* pauza automatu po akcji UI */
+static uint32_t s_last_move_ms = 0U;    /* ostatnia komenda RUCHU (pauza dimu) */
+static uint8_t  s_dim_latch = 0U;       /* 1 = ostatnia jazda z radaru (dim) */
+static uint8_t  s_auto_close_done = 0U; /* ekran fizycznie domkniety (0 st) */
+
 /* DONE jest krytyczne dla apki (czeka na nie sekwencer): jesli ring TX byl
  * pelny w momencie dojazdu, probujemy ponownie przez 1 s zamiast gubic. */
 static uint8_t s_done_pending = 0;
@@ -82,9 +90,11 @@ static uint8_t cmd_pop(stepper_cmd_t *q)
     return 1U;
 }
 
-/* Usuwa z ringu WYLACZNIE komendy ruchu. STOP: ACK-owane MOVE sprzed STOP-u
- * maja nie ruszyc, ale preferencje/telemetria zakolejkowane przed nim maja
- * sie wykonac (wczesniejszy cmd_reset zjadal np. SET_ZERO i STATUS). */
+/* Usuwa z ringu komendy ruchu ORAZ zalegle STOP-y (STOP jest obslugiwany
+ * natychmiast w dispatch — kolejny w ringu nie ma czego zatrzymywac, a jego
+ * przetwarzanie w petli wywolywaloby purge rekurencyjnie). ACK-owane MOVE
+ * sprzed STOP-u nie rusza, ale preferencje/telemetria zakolejkowane przed
+ * nim wykonaja sie (wczesniejszy cmd_reset zjadal np. SET_ZERO i STATUS). */
 static void cmd_purge_moves(void)
 {
     stepper_cmd_t keep[STEPPER_QUEUE_LEN];
@@ -93,7 +103,8 @@ static void cmd_purge_moves(void)
     while (cmd_pop(&q)) {
         if (q.cmd != STEPPER_CMD_MOVE_REL &&
             q.cmd != STEPPER_CMD_MOVE_ABS &&
-            q.cmd != STEPPER_CMD_MOVE_DEG) {
+            q.cmd != STEPPER_CMD_MOVE_DEG &&
+            q.cmd != STEPPER_CMD_STOP) {
             keep[n++] = q;
         }
     }
@@ -207,6 +218,13 @@ static void stepper_stop_now(void)
     stepper_motion_stop(&s_motion);
     stepper_hw_release();
     cmd_purge_moves();
+    /* STOP to REALNA akcja UI: pauzuje automat, gasi dim i kasuje stan
+     * "zamkniete". Bez tego automat wznawial zjazd w tej samej iteracji
+     * (STOP wygladal jak "nie dziala"), a jasnosc zostawala zdimowana. */
+    s_last_cmd_ms     = HAL_GetTick();
+    s_last_move_ms    = HAL_GetTick();
+    s_dim_latch       = 0U;
+    s_auto_close_done = 0U;
     tx_status();
 }
 
@@ -417,23 +435,9 @@ void stepper_poll(void)
 {
     static uint8_t booted = 0U;
     static uint8_t was_busy = 0U;
-    static uint32_t s_last_cmd_ms = 0U;
     static uint8_t s_cal_mode = 0U;      /* CAL_MODE z Guitiona (kalibracja) */
     static uint32_t s_cal_mode_ms = 0U;
-    /* Latch dimu: 1 = ostatnia jazda wyszla z automatu radaru (zjazd do 0
-     * albo otwarcie po zboczu OUT). Tylko wtedy jasnosc 7-seg sledzi pozycje
-     * (produkt: "plynne wylaczenie" dziala WYLACZNIE dla ruchow radaru).
-     * Jazda z UI (reka / JEDZ DO / kalibracja) i boot-home gasza latch —
-     * operator dostaje pelna jasnosc. Start = 0 (zero dimu przy podnoszeniu
-     * po resecie). */
-    static uint8_t s_dim_latch = 0U;
-    /* Ostatnia komenda RUCHU z UI (nie preferencja) — tylko ona pauzuje dim;
-     * SET_TARGET/SET_ONOFF/CZAS/CZULOSC nie moga rozjasniac ekranu na 1 s. */
-    static uint32_t s_last_move_ms = 0U;
-    /* Automat LD2410C — stan miedzy iteracjami (na poziomie funkcji, bo
-     * komendy z ringu tez go dotykaja: STOP/reczny ruch kasuje close_done). */
     static uint8_t  s_auto_last_out = 0U;
-    static uint8_t  s_auto_close_done = 0U;
     static uint8_t  s_auto_open_pending = 0U;
     static uint8_t  s_auto_en_prev = 0U;
     static uint32_t s_auto_out_ms = 0U;
