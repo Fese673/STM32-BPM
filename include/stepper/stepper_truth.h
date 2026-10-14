@@ -40,11 +40,15 @@ extern "C" {
 #define STEPPER_REF_FLAG_CAL_OK 0x01U
 /* Flaga w ramce 0xB2/0xB4: automat LD2410C wlaczony. */
 #define STEPPER_REF_FLAG_RADAR_EN 0x02U
+/* Flaga w ramce 0xB2/0xB4: "plynne wylaczenie" (dim 7-seg przy zjezdzie). */
+#define STEPPER_REF_FLAG_ONOFF 0x10U
 /* Bit wewnetrznego pola flags slotu flash. */
 #define TRUTH_FLAG_RADAR_EN 0x01U
 /* Bity 1-2 pola flags: preset czulosci OUT radaru (0/1/2 = SREDNIA/WYSOKA/
  * MALA). Stare sloty maja tam 0 (home_accel=1000 / flags bez sens) -> SREDNIA. */
 #define TRUTH_FLAG_RADAR_SENS_SHIFT 1U
+/* Bit 3 pola flags: "plynne wylaczenie" (premium dim 7-seg; default 0 = OFF). */
+#define TRUTH_FLAG_ONOFF 0x08U
 
 /* Odtworzenie z flash. Wywolac raz w stepper_init() PRZED startem
  * petli. Zwraca przez wskazniki: pos (do wstawienia w licznik),
@@ -114,6 +118,12 @@ void truth_set_radar_en(uint8_t en, int32_t cur_pos, uint8_t busy);
  * ld2410_radar_init/request (progi bramek w wrapperze radaru). */
 uint8_t truth_radar_sens(void);
 void truth_set_radar_sens(uint8_t code, int32_t cur_pos, uint8_t busy);
+
+/* "Plynne wylaczenie" (przycisk na ekranie RADAR w Guitionie): bramka
+ * premium dimu 7-seg przy zjezdzie (bit 3 pola flags slotu — stare sloty
+ * czytaja sie jako OFF). Automat ruchu bez zmian. Zapis jak SET_SPEED. */
+uint8_t truth_onoff(void);
+void truth_set_onoff(uint8_t en, int32_t cur_pos, uint8_t busy);
 
 /* WYBRANY kat z UI (single-click presetu; persist we flash). Sluzy
  * automatowi LD2410C (otwarcie) i wraca echem REF do HMI. Default 45

@@ -70,23 +70,24 @@ bool uart1_write(const uint8_t *data, uint16_t len)
     const uint32_t primask = __get_PRIMASK();
     __disable_irq();
     {
-        uint16_t copied = 0;
-        while (copied < len) {
-            uint16_t h  = tx_head;
-            uint16_t nh = (uint16_t)(h + 1U);
-            if (nh >= TX_QUEUE_SIZE) nh = 0U;
-            if (nh == tx_tail) {
-                /* Ring pelny — zatrzymujemy sie, wyslemy to co sie zmiescilo. */
-                break;
+        /* ALL-OR-NOTHING: najpierw sprawdzamy, czy cala ramka sie zmiesci.
+         * Wczesniej przy prawie pelnym ringu kopiowal sie OBCIETY prefiks
+         * (bez CRC/delimitera) — po drugiej stronie licznik frames_bad
+         * i realna szansa na utrate ACK/DONE. Teraz za malo miejsca =
+         * nic nie kopiujemy, caller dostaje false i sam decyduje
+         * (DONE ma retry, ACK/REF nie sa krytyczne). */
+        const uint16_t used = (uint16_t)((tx_head - tx_tail) & TX_QUEUE_MASK);
+        const uint16_t free_slots = (uint16_t)(TX_QUEUE_SIZE - 1U - used);
+        if (len <= free_slots) {
+            for (uint16_t i = 0U; i < len; ++i) {
+                const uint16_t h = tx_head;
+                tx_queue[h] = data[i];
+                tx_head = (uint16_t)((tx_head + 1U) & TX_QUEUE_MASK);
             }
-
-            tx_queue[h] = data[copied];
-            copied++;
-            __DMB();  /* Dane widoczne przed aktualizacja head. */
-            tx_head = nh;
+            __DMB();  /* Dane widoczne przed kickiem ISR. */
+            ok = true;
+            uart1_tx_kick();
         }
-        ok = (copied == len);
-        uart1_tx_kick();
     }
     if (primask == 0U) {
         __enable_irq();

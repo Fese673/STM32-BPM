@@ -19,4 +19,9 @@ void brightness_handler_init(void);
 void brightness_handler_dispatch(uint8_t type, uint8_t seq,
                                  const uint8_t *payload, uint16_t len);
 
+/* Maksymalna jasnosc ustawiona przez uzytkownika (ostatnia poprawna ramka
+ * 0xB0; fail-safe/bledna ramka = 100). Warstwa "plynnego wylaczania"
+ * (stepper_link) schodzi z tej wartosci w dol — nigdy jej nie przekracza. */
+uint8_t brightness_user_percent(void);
+
 #endif /* BRIGHTNESS_HANDLER_H */

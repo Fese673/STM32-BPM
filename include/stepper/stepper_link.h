@@ -98,6 +98,10 @@ extern "C" {
                                        * (0=SREDNIA, 1=WYSOKA, 2=MALA; inne = SREDNIA).
                                        * Persist (bity 1-2 flags truth) + aplikacja
                                        * w module + echo w 0xB2/0xB4 (bity 2-3 flags) */
+#define STEPPER_CMD_SET_ONOFF 0x10U    /* cmd(1) + en(1): "plynne wylaczenie" —
+                                       * bramka premium dimu 7-seg przy zjezdzie
+                                       * (bit 3 flags truth; persist + echo 0xB4
+                                       * bit4). Automat ruchu bez zmian. */
 
 /* Rejestruje handler 0xB1 + zeruje ring. Wywolac raz w main()
  * PO frame_protocol_init(). Nie tyka UART ani innych handlerow. */

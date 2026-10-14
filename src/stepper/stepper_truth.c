@@ -90,6 +90,7 @@ static uint16_t s_home_speed = TRUTH_SPEED_DEF; /* nadpisuje flash w init */
 static uint16_t s_home_deg = 0U; /* cel powrotu po resecie (nadpisuje flash) */
 static uint8_t  s_radar_en = 0U; /* automat LD2410C (nadpisuje flash) */
 static uint8_t  s_radar_sens = 0U; /* preset czulosci OUT 0/1/2 (nadpisuje flash) */
+static uint8_t  s_onoff = 0U; /* "plynne wylaczenie" — dim 7-seg (nadpisuje flash) */
 static uint16_t s_target_deg = TRUTH_TARGET_DEF; /* wybrany kat (nadpisuje flash) */
 static uint16_t s_auto_close_s = TRUTH_AUTO_CLOSE_DEF_S; /* auto-zjazd radaru (flash) */
 static int32_t  s_last_saved_pos = 0L;
@@ -99,6 +100,10 @@ static uint8_t  s_have_saved_base = 0U;
 static uint8_t  s_save_armed = 0U;
 static int32_t  s_save_pos = 0L;
 static uint32_t s_save_deadline = 0;
+/* Zmiana PREFERENCJI (nie pozycji) — wymusza zapis takze wtedy, gdy ruch
+ * skonczy sie w ostatnio zapisanej pozycji (bez tego SET_* zlany w trakcie
+ * ruchu przepadal i po restarcie wracala stara wartosc). */
+static uint8_t  s_cfg_dirty = 0U;
 
 /* Jednorazowa flaga auto-home po starcie. */
 static uint8_t s_home_needed = 0U;
@@ -199,17 +204,18 @@ static uint16_t ac_sanitize(uint16_t s)
     }
 }
 
-/* Fizyczny zapis slotu. Kontekst: stepper_poll, postoj. Zwraca 1 gdy OK. */
-static uint8_t flash_write_slot(uint32_t addr, const truth_slot_t *s)
+/* Fizyczny zapis: ZAWSZE oba sloty (A i B) ta sama zawartoscia — po zapisie
+ * istnieja dwie wazne kopie i uszkodzenie jednej nie gubi kalibracji ani
+ * ustawien (wczesniej kazdy zapis uniewaznial kopia zapasowa).
+ * Kontekst: stepper_poll, TYLKO na postoju (erase stalluje CPU ~20 ms). */
+static uint8_t truth_flash_store(const truth_slot_t *s)
 {
     const uint16_t *hw = (const uint16_t *)s;
     HAL_StatusTypeDef st;
 
     HAL_FLASH_Unlock();
 
-    if (!slot_erased(addr)) {
-        /* Slot zajety — erase calej strony (oba sloty przepadaja, seq w RAM
-         * rosnie monotonicznie, wiec nastepny zapis i tak wygra). */
+    if (!slot_erased(TRUTH_SLOT_A) || !slot_erased(TRUTH_SLOT_B)) {
         FLASH_EraseInitTypeDef ei;
         uint32_t page_err = 0U;
         ei.TypeErase   = FLASH_TYPEERASE_PAGES;
@@ -220,23 +226,25 @@ static uint8_t flash_write_slot(uint32_t addr, const truth_slot_t *s)
             HAL_FLASH_Lock();
             return 0U;
         }
-        addr = TRUTH_SLOT_A;  /* po erase piszemy od A */
     }
 
-    for (uint32_t i = 0U; i < sizeof(truth_slot_t) / 2U; ++i) {
-        st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD,
-                               addr + i * 2U, (uint64_t)hw[i]);
-        if (st != HAL_OK) {
-            HAL_FLASH_Lock();
-            return 0U;
+    const uint32_t addr[2] = { TRUTH_SLOT_A, TRUTH_SLOT_B };
+    for (uint32_t a = 0U; a < 2U; ++a) {
+        for (uint32_t i = 0U; i < sizeof(truth_slot_t) / 2U; ++i) {
+            st = HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD,
+                                   addr[a] + i * 2U, (uint64_t)hw[i]);
+            if (st != HAL_OK) {
+                HAL_FLASH_Lock();
+                return 0U;
+            }
         }
     }
     HAL_FLASH_Lock();
 
-    /* Weryfikacja: re-read + CRC. */
-    {
+    /* Weryfikacja OBU kopii: re-read + CRC + seq/pos/span. */
+    for (uint32_t a = 0U; a < 2U; ++a) {
         truth_slot_t v;
-        slot_read(addr, &v);
+        slot_read(addr[a], &v);
         if (!slot_valid(&v)) return 0U;
         if (v.seq != s->seq || v.pos != s->pos || v.span != s->span) return 0U;
     }
@@ -245,12 +253,6 @@ static uint8_t flash_write_slot(uint32_t addr, const truth_slot_t *s)
 
 static uint8_t truth_save_now(int32_t pos)
 {
-    truth_slot_t a, b;
-    slot_read(TRUTH_SLOT_A, &a);
-    slot_read(TRUTH_SLOT_B, &b);
-    const uint8_t va = slot_valid(&a);
-    const uint8_t vb = slot_valid(&b);
-
     ++s_seq;
     truth_slot_t s;
     s.magic       = TRUTH_MAGIC;
@@ -260,22 +262,18 @@ static uint8_t truth_save_now(int32_t pos)
     s.home_speed  = s_home_speed;
     s.flags       = (uint16_t)((s_radar_en ? TRUTH_FLAG_RADAR_EN : 0U) |
                                ((uint16_t)(s_radar_sens & 0x03U)
-                                << TRUTH_FLAG_RADAR_SENS_SHIFT));
+                                << TRUTH_FLAG_RADAR_SENS_SHIFT) |
+                               (s_onoff ? TRUTH_FLAG_ONOFF : 0U));
     s.home_deg    = s_home_deg;
     s.target_deg  = s_target_deg;
     s.auto_close_s = s_auto_close_s;
     s.crc         = slot_crc(&s);
 
-    /* Cel: slot niewazny; gdy oba wazne — starszy (mniejszy seq). */
-    uint32_t addr;
-    if (!va)      addr = TRUTH_SLOT_A;
-    else if (!vb) addr = TRUTH_SLOT_B;
-    else          addr = (a.seq <= b.seq) ? TRUTH_SLOT_A : TRUTH_SLOT_B;
-
-    if (flash_write_slot(addr, &s)) {
+    if (truth_flash_store(&s)) {
         ++g_truth_saves;
         s_last_saved_pos = pos;
         s_have_saved_base = 1U;
+        s_cfg_dirty = 0U;
         return 1U;
     }
     ++g_truth_save_fail;
@@ -314,6 +312,8 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
         /* Preset czulosci OUT (bity 1-2; stare sloty = 0 = SREDNIA). */
         s_radar_sens = (uint8_t)((best->flags >> TRUTH_FLAG_RADAR_SENS_SHIFT) & 0x03U);
         if (s_radar_sens > 2U) s_radar_sens = 0U;
+        /* Plynne wylaczenie (bit 3; stare sloty = 0 = OFF). */
+        s_onoff = (uint8_t)((best->flags & TRUTH_FLAG_ONOFF) != 0U);
         /* Wybrany kat (0xFFFF/poza zakresem = default). */
         uint16_t td = best->target_deg;
         if (td == 0xFFFFU || td > 360U) td = TRUTH_TARGET_DEF;
@@ -357,6 +357,7 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
             s_radar_en = (uint8_t)((v2->flags & TRUTH_FLAG_RADAR_EN) != 0U);
             s_radar_sens = (uint8_t)((v2->flags >> TRUTH_FLAG_RADAR_SENS_SHIFT) & 0x03U);
             if (s_radar_sens > 2U) s_radar_sens = 0U;
+            s_onoff = (uint8_t)((v2->flags & TRUTH_FLAG_ONOFF) != 0U);
             uint16_t td = v2->target_deg;
             if (td == 0xFFFFU || td > 360U) td = TRUTH_TARGET_DEF;
             s_target_deg = td;
@@ -396,6 +397,7 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
             s_home_deg = hd;
             s_radar_en = 0U;                /* stary layout nie mial flag */
             s_radar_sens = 0U;              /* brak presetu -> SREDNIA */
+            s_onoff = 0U;                   /* brak flag -> OFF */
             s_target_deg = TRUTH_TARGET_DEF;
             s_auto_close_s = TRUTH_AUTO_CLOSE_DEF_S;
             s_last_saved_pos = old->pos;
@@ -413,6 +415,7 @@ void truth_init(int32_t *pos_out, int32_t *span_out, uint8_t *cal_ok_out)
             s_cal_ok = 0U;
             s_radar_en = 0U;
             s_radar_sens = 0U;
+            s_onoff = 0U;
             s_target_deg = TRUTH_TARGET_DEF;
             s_auto_close_s = TRUTH_AUTO_CLOSE_DEF_S;
             s_have_saved_base = 0U;
@@ -464,8 +467,8 @@ int32_t truth_deg_to_steps(uint16_t deg)
 
 void truth_on_motion_end(int32_t pos)
 {
-    if (s_have_saved_base && (pos == s_last_saved_pos)) {
-        s_save_armed = 0U;  /* stoi gdzie stalo — nie zuzywamy flash */
+    if (s_have_saved_base && (pos == s_last_saved_pos) && !s_cfg_dirty) {
+        s_save_armed = 0U;  /* stoi gdzie stalo i brak nowych preferencji */
         return;
     }
     s_save_armed = 1U;
@@ -484,7 +487,27 @@ void truth_task_tick(int32_t cur_pos, uint8_t busy)
     }
     if ((int32_t)(HAL_GetTick() - s_save_deadline) < 0) return;
     s_save_armed = 0U;
-    truth_save_now(s_save_pos);
+    if (!truth_save_now(s_save_pos) && s_cfg_dirty) {
+        /* Flash odmowil (np. busy/err) — ponow za TRUTH_SAVE_DELAY_MS. */
+        s_save_armed = 1U;
+        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
+    }
+}
+
+/* Wspolna sciezka zapisu PREFERENCJI (settety truth_set_*): w ruchu tylko
+ * uzbraja (erase stalluje CPU — nie wolno w trakcie krokow), na postoju
+ * zapisuje od razu. Flaga cfg_dirty przetrwa do skutku, wiec zmiana zlana
+ * w trakcie ruchu dojdzie do flasha takze przy powrocie na te sama pozycje. */
+static void truth_pref_commit(int32_t cur_pos, uint8_t busy)
+{
+    s_cfg_dirty = 1U;
+    if (busy) {
+        s_save_armed = 1U;
+        s_save_pos = cur_pos;
+        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
+        return;
+    }
+    truth_save_now(s_have_saved_base ? s_last_saved_pos : cur_pos);
 }
 
 uint8_t truth_home_needed(void)
@@ -509,17 +532,7 @@ void truth_set_home(uint16_t deg, int32_t cur_pos, uint8_t busy)
     if (deg > 360U) deg = 360U;
     if (deg == s_home_deg) return; /* bez zmian — nie zuzywamy flash */
     s_home_deg = deg;
-    if (busy) {
-        s_save_armed = 1U;
-        s_save_pos = cur_pos;
-        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
-        return;
-    }
-    if (s_have_saved_base) {
-        truth_save_now(s_last_saved_pos);
-    } else {
-        truth_save_now(0L);
-    }
+    truth_pref_commit(cur_pos, busy);
 }
 
 void truth_set_speed(uint16_t speed, int32_t cur_pos, uint8_t busy)
@@ -528,19 +541,8 @@ void truth_set_speed(uint16_t speed, int32_t cur_pos, uint8_t busy)
     if (speed > TRUTH_SPEED_MAX) speed = TRUTH_SPEED_MAX;
     if (speed == s_home_speed) return; /* bez zmian — nie zuzywamy flash */
     s_home_speed = speed;
-    if (busy) {
-        /* W ruchu: nie stallujemy erase'em — uzbrajamy zapis na postoj
-         * (tick dopisze 2 s po krawedzi; pozycje i tak odswieza). */
-        s_save_armed = 1U;
-        s_save_pos = cur_pos;
-        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
-        return;
-    }
-    if (s_have_saved_base) {
-        truth_save_now(s_last_saved_pos);
-    } else {
-        truth_save_now(0L);
-    }
+    /* W ruchu: nie stallujemy erase'em — commit uzbroi zapis na postoj. */
+    truth_pref_commit(cur_pos, busy);
 }
 
 uint16_t truth_target_deg(void) { return s_target_deg; }
@@ -550,17 +552,7 @@ void truth_set_target(uint16_t deg, int32_t cur_pos, uint8_t busy)
     if (deg > 360U) deg = 360U;
     if (deg == s_target_deg) return; /* bez zmian — nie zuzywamy flash */
     s_target_deg = deg;
-    if (busy) {
-        s_save_armed = 1U;
-        s_save_pos = cur_pos;
-        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
-        return;
-    }
-    if (s_have_saved_base) {
-        truth_save_now(s_last_saved_pos);
-    } else {
-        truth_save_now(0L);
-    }
+    truth_pref_commit(cur_pos, busy);
 }
 
 uint8_t truth_radar_en(void) { return s_radar_en; }
@@ -570,17 +562,17 @@ void truth_set_radar_en(uint8_t en, int32_t cur_pos, uint8_t busy)
     en = (uint8_t)(en != 0U);
     if (en == s_radar_en) return; /* bez zmian — nie zuzywamy flash */
     s_radar_en = en;
-    if (busy) {
-        s_save_armed = 1U;
-        s_save_pos = cur_pos;
-        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
-        return;
-    }
-    if (s_have_saved_base) {
-        truth_save_now(s_last_saved_pos);
-    } else {
-        truth_save_now(0L);
-    }
+    truth_pref_commit(cur_pos, busy);
+}
+
+uint8_t truth_onoff(void) { return s_onoff; }
+
+void truth_set_onoff(uint8_t en, int32_t cur_pos, uint8_t busy)
+{
+    en = (uint8_t)(en != 0U);
+    if (en == s_onoff) return; /* bez zmian — nie zuzywamy flash */
+    s_onoff = en;
+    truth_pref_commit(cur_pos, busy);
 }
 
 uint16_t truth_auto_close_s(void) { return s_auto_close_s; }
@@ -590,17 +582,7 @@ void truth_set_auto_close(uint16_t s, int32_t cur_pos, uint8_t busy)
     s = ac_sanitize(s); /* tylko presety 30/180/600/2700, inne = default */
     if (s == s_auto_close_s) return; /* bez zmian — nie zuzywamy flash */
     s_auto_close_s = s;
-    if (busy) {
-        s_save_armed = 1U;
-        s_save_pos = cur_pos;
-        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
-        return;
-    }
-    if (s_have_saved_base) {
-        truth_save_now(s_last_saved_pos);
-    } else {
-        truth_save_now(0L);
-    }
+    truth_pref_commit(cur_pos, busy);
 }
 
 uint8_t truth_radar_sens(void) { return s_radar_sens; }
@@ -610,15 +592,5 @@ void truth_set_radar_sens(uint8_t code, int32_t cur_pos, uint8_t busy)
     code = (code <= 2U) ? code : 0U; /* tylko presety 0/1/2 */
     if (code == s_radar_sens) return; /* bez zmian — nie zuzywamy flash */
     s_radar_sens = code;
-    if (busy) {
-        s_save_armed = 1U;
-        s_save_pos = cur_pos;
-        s_save_deadline = HAL_GetTick() + (TRUTH_SAVE_DELAY_MS);
-        return;
-    }
-    if (s_have_saved_base) {
-        truth_save_now(s_last_saved_pos);
-    } else {
-        truth_save_now(0L);
-    }
+    truth_pref_commit(cur_pos, busy);
 }

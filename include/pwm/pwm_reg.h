@@ -16,4 +16,8 @@ void PWM_Reg_Init(void);
 /* percent 0..100 (100 = pelna jasnosc, 0 = zgaszone). >100 przycinane. */
 void PWM_Reg_SetDuty(uint8_t percent);
 
+/* Ostatnio ustawiony percent (sledzenie dla warstwy dimu — stepper_link
+ * porownuje wartosc docelowa z faktyczna, zeby nie pisac PWM bez zmiany). */
+uint8_t PWM_Reg_LastDuty(void);
+
 #endif

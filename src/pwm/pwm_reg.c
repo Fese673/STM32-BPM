@@ -29,9 +29,17 @@ void PWM_Reg_Init(void)
     PWM_Reg_SetDuty(PWM_REG_START_PERCENT);
 }
 
+static uint8_t s_last_pct = 100U; /* FailSafe trzyma pelna jasnosc */
+
+uint8_t PWM_Reg_LastDuty(void)
+{
+    return s_last_pct;
+}
+
 void PWM_Reg_SetDuty(uint8_t percent)
 {
     if (percent > 100) percent = 100;
+    s_last_pct = percent;
     /* 7447 ma BLANKING active-low: LOW=ON, HIGH=OFF.
      * PWM 0% = PA6 LOW = segmenty 100% ON (jasno).
      * PWM 100% = PA6 HIGH = segmenty 0% (zgaszone).

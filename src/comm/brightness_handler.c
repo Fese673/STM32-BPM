@@ -14,6 +14,14 @@
 #include "pwm/pwm_reg.h"
 #include "comm/frame_protocol.h"
 
+/* Maksymalna jasnosc uzytkownika (ostatnia poprawna ramka; fail-safe = 100). */
+static uint8_t s_user_pct = 100U;
+
+uint8_t brightness_user_percent(void)
+{
+    return s_user_pct;
+}
+
 void brightness_handler_init(void)
 {
     frame_protocol_register(FRAME_TYPE_BRIGHTNESS, brightness_handler_dispatch);
@@ -25,7 +33,11 @@ void brightness_handler_dispatch(uint8_t type, uint8_t seq,
     (void)type;
     (void)seq;
 
-    /* Payload = [value 0..100] */
+    /* Payload = [value 0..100].
+     * Fail-safe: bledna ramka => natychmiast pelna jasnosc (nigdy nie
+     * zostaje stan nieustalony ani sciemnienie po smieciowym sygnale), ale
+     * NIE niszczymy zapamietanej wartosci uzytkownika — pojedynczy uszkodzony
+     * payload nie moze odebrac operatorowi ustawionej jasnosci na stale. */
     if (len != 1U || payload == NULL) {
         PWM_Reg_SetDuty(100U);                          /* fail-safe */
         (void)frame_tx_ack(0U, FRAME_TYPE_BRIGHTNESS);  /* NACK */
@@ -39,6 +51,7 @@ void brightness_handler_dispatch(uint8_t type, uint8_t seq,
         return;
     }
 
+    s_user_pct = value;
     PWM_Reg_SetDuty(value);
     (void)frame_tx_ack(1U, FRAME_TYPE_BRIGHTNESS);      /* ACK */
 }

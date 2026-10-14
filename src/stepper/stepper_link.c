@@ -13,6 +13,8 @@
 #include "stepper/stepper_motion.h"
 #include "stepper/stepper_truth.h"
 #include "comm/frame_protocol.h"
+#include "comm/brightness_handler.h"     /* brightness_user_percent */
+#include "pwm/pwm_reg.h"                 /* PWM_Reg_SetDuty/LastDuty */
 #include "radar/ld2410_radar_wrapper.h"  /* LD2410_ENABLE */
 #include "radar/radar_out.h"
 
@@ -71,15 +73,6 @@ static uint8_t cmd_push_back(const stepper_cmd_t *q)
     return 1U;
 }
 
-static uint8_t cmd_push_front(const stepper_cmd_t *q)
-{
-    if (s_cmd_count >= STEPPER_QUEUE_LEN) return 0U;
-    s_cmd_head = (uint8_t)((s_cmd_head - 1U) & STEPPER_QUEUE_MASK);
-    s_cmd_ring[s_cmd_head] = *q;
-    ++s_cmd_count;
-    return 1U;
-}
-
 static uint8_t cmd_pop(stepper_cmd_t *q)
 {
     if (s_cmd_count == 0U) return 0U;
@@ -89,11 +82,24 @@ static uint8_t cmd_pop(stepper_cmd_t *q)
     return 1U;
 }
 
-static void cmd_reset(void)
+/* Usuwa z ringu WYLACZNIE komendy ruchu. STOP: ACK-owane MOVE sprzed STOP-u
+ * maja nie ruszyc, ale preferencje/telemetria zakolejkowane przed nim maja
+ * sie wykonac (wczesniejszy cmd_reset zjadal np. SET_ZERO i STATUS). */
+static void cmd_purge_moves(void)
 {
-    s_cmd_head = 0U;
-    s_cmd_tail = 0U;
-    s_cmd_count = 0U;
+    stepper_cmd_t keep[STEPPER_QUEUE_LEN];
+    uint8_t n = 0U;
+    stepper_cmd_t q;
+    while (cmd_pop(&q)) {
+        if (q.cmd != STEPPER_CMD_MOVE_REL &&
+            q.cmd != STEPPER_CMD_MOVE_ABS &&
+            q.cmd != STEPPER_CMD_MOVE_DEG) {
+            keep[n++] = q;
+        }
+    }
+    for (uint8_t i = 0U; i < n; ++i) {
+        (void)cmd_push_back(&keep[i]);
+    }
 }
 
 static int32_t rd_i32le(const uint8_t *p)
@@ -125,6 +131,7 @@ static void tx_status(void)
     pl[5] = truth_calibrated() ? STEPPER_REF_FLAG_CAL_OK : 0U;
     if (truth_radar_en()) pl[5] |= STEPPER_REF_FLAG_RADAR_EN;
     pl[5] |= (uint8_t)((truth_radar_sens() & 0x03U) << 2U); /* bity 2-3 */
+    if (truth_onoff()) pl[5] |= STEPPER_REF_FLAG_ONOFF;     /* bit 4 */
     if (frame_tx_send(STEPPER_FRAME_STATUS, pl, sizeof(pl))) {
         ++g_stepper_tx_status;
     }
@@ -141,6 +148,7 @@ static void tx_ref(void)
     pl[8] = truth_calibrated() ? STEPPER_REF_FLAG_CAL_OK : 0U;
     if (truth_radar_en()) pl[8] |= STEPPER_REF_FLAG_RADAR_EN;
     pl[8] |= (uint8_t)((truth_radar_sens() & 0x03U) << 2U); /* bity 2-3 */
+    if (truth_onoff()) pl[8] |= STEPPER_REF_FLAG_ONOFF;     /* bit 4 */
     const uint16_t hd = truth_home_deg();
     pl[9]  = (uint8_t)(hd & 0xFFU);
     pl[10] = (uint8_t)((hd >> 8) & 0xFFU);
@@ -163,6 +171,9 @@ static void tx_done(void)
     uint8_t pl[4];
     wr_i32le(pl, stepper_motion_pos(&s_motion));
     if (frame_tx_send(STEPPER_FRAME_DONE, pl, sizeof(pl))) {
+        /* Sukces = nowszy DONE wyparl zalegly retry (bez tego stary DONE
+         * ze stara pozycja moglby poleciec po zakonczonym kolejnym ruchu). */
+        s_done_pending = 0;
         ++g_stepper_tx_done;
     } else {
         /* Ring TX pelny — nie gubimy DONE (apka czeka), tylko odloz retry. */
@@ -187,9 +198,21 @@ static void tx_done_retry(void)
     }
 }
 
+/* STOP natychmiast: ten sam kontekst co stepper_poll (main loop), wiec
+ * dziala bez ringu — pelny ring komend RX nie moze zjesc E-stopu.
+ * Idempotentny; po nim ruszy tylko to, co przyjdzie NOWYMI ramkami. */
+static void stepper_stop_now(void)
+{
+    s_done_pending = 0;
+    stepper_motion_stop(&s_motion);
+    stepper_hw_release();
+    cmd_purge_moves();
+    tx_status();
+}
+
 /* Handler ramki 0xB1 — kontekst main loop (frame_rx_process). ZERO
- * blokowania: tylko walidacja dlugosci + wrzut na ring. Ciezka robota
- * w stepper_poll. */
+ * blokowania: walidacja + (STOP: natychmiast) / reszta na ring. Ciezka
+ * robota w stepper_poll. */
 static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
                                  const uint8_t *payload, uint16_t len)
 {
@@ -228,7 +251,6 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
         if (q.arg1 < -STEPPER_MAX_MOVE) q.arg1 = -STEPPER_MAX_MOVE;
         break;
 
-    case STEPPER_CMD_STOP:
     case STEPPER_CMD_STATUS:
     case STEPPER_CMD_SET_ZERO:
     case STEPPER_CMD_GET_REF:
@@ -239,6 +261,17 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
         }
         q.cmd = cmd;
         break;
+
+    case STEPPER_CMD_STOP:
+        if (len != 1U) {
+            ++g_stepper_rx_bad;
+            (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
+            return;
+        }
+        stepper_stop_now(); /* E-stop poza ringiem — zawsze dojdzie */
+        ++g_stepper_rx_cmd;
+        (void)frame_tx_ack(1U, STEPPER_FRAME_CMD);
+        return;
 
     case STEPPER_CMD_SET_SPAN:
         if (len != 5U) {   /* cmd(1) + speed u16(2) + accel u16(2) */
@@ -323,20 +356,24 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
         q.arg1 = (int32_t)payload[1];  /* czulosc OUT radaru */
         break;
 
+    case STEPPER_CMD_SET_ONOFF:
+        if (len != 2U) {   /* cmd(1) + en(1) */
+            ++g_stepper_rx_bad;
+            (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
+            return;
+        }
+        q.cmd  = cmd;
+        q.arg1 = (int32_t)payload[1];  /* 0 = OFF, !=0 = ON */
+        break;
+
     default:
         ++g_stepper_rx_bad;
         (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
         return;
     }
 
-    /* STOP ma pierwszenstwo — na czolo kolejki. Reszta na koniec.
-     * Ring pelny -> NACK, dekoder COBS nigdy nie staje. */
-    uint8_t ok;
-    if (q.cmd == STEPPER_CMD_STOP) {
-        ok = cmd_push_front(&q);
-    } else {
-        ok = cmd_push_back(&q);
-    }
+    /* Ring pelny -> NACK, dekoder COBS nigdy nie staje. */
+    const uint8_t ok = cmd_push_back(&q);
     if (ok) {
         ++g_stepper_rx_cmd;
         (void)frame_tx_ack(1U, STEPPER_FRAME_CMD);
@@ -374,7 +411,8 @@ void stepper_init(void)
  * precyzje (krok dokladnie w terminie, nie na najblizszym ticku HAL).
  * Przy multisekundowych blokadach superloop (np. erase flash ~20 ms)
  * zaleglosc nadrabia cap 4 interwalow w motion (bez "strzelania").
- * STOP z ringu ma latencje jednej iteracji petli. Nieblokujaca. */
+ * STOP dziala NATYCHMIAST w dispatch (poza ringiem) — pelny ring RX nie
+ * moze zjesc E-stopu. Nieblokujaca. */
 void stepper_poll(void)
 {
     static uint8_t booted = 0U;
@@ -382,6 +420,23 @@ void stepper_poll(void)
     static uint32_t s_last_cmd_ms = 0U;
     static uint8_t s_cal_mode = 0U;      /* CAL_MODE z Guitiona (kalibracja) */
     static uint32_t s_cal_mode_ms = 0U;
+    /* Latch dimu: 1 = ostatnia jazda wyszla z automatu radaru (zjazd do 0
+     * albo otwarcie po zboczu OUT). Tylko wtedy jasnosc 7-seg sledzi pozycje
+     * (produkt: "plynne wylaczenie" dziala WYLACZNIE dla ruchow radaru).
+     * Jazda z UI (reka / JEDZ DO / kalibracja) i boot-home gasza latch —
+     * operator dostaje pelna jasnosc. Start = 0 (zero dimu przy podnoszeniu
+     * po resecie). */
+    static uint8_t s_dim_latch = 0U;
+    /* Ostatnia komenda RUCHU z UI (nie preferencja) — tylko ona pauzuje dim;
+     * SET_TARGET/SET_ONOFF/CZAS/CZULOSC nie moga rozjasniac ekranu na 1 s. */
+    static uint32_t s_last_move_ms = 0U;
+    /* Automat LD2410C — stan miedzy iteracjami (na poziomie funkcji, bo
+     * komendy z ringu tez go dotykaja: STOP/reczny ruch kasuje close_done). */
+    static uint8_t  s_auto_last_out = 0U;
+    static uint8_t  s_auto_close_done = 0U;
+    static uint8_t  s_auto_open_pending = 0U;
+    static uint8_t  s_auto_en_prev = 0U;
+    static uint32_t s_auto_out_ms = 0U;
     stepper_cmd_t q;
 
     /* 0. Jednorazowo po starcie: oglos prawde (REF) + autonomiczny
@@ -407,6 +462,18 @@ void stepper_poll(void)
         if (q.cmd != STEPPER_CMD_STATUS && q.cmd != STEPPER_CMD_GET_REF) {
             s_last_cmd_ms = HAL_GetTick();
         }
+        /* Ruch z UI (reka / "JEDZ DO" / kalibracja) gasi latch dimu:
+         * jasnosc ma sledzic wylacznie automaty radaru. Preferencje
+         * (SET_*, CAL_MODE) nie ruszaja silnika — latch zostaje. */
+        if (q.cmd == STEPPER_CMD_MOVE_REL || q.cmd == STEPPER_CMD_MOVE_ABS ||
+            q.cmd == STEPPER_CMD_STOP || q.cmd == STEPPER_CMD_MOVE_DEG ||
+            q.cmd == STEPPER_CMD_SET_ZERO || q.cmd == STEPPER_CMD_SET_SPAN) {
+            s_dim_latch = 0U;
+            s_last_move_ms = HAL_GetTick();
+            /* Przerwany / reczny ruch: cisza radaru moze znow domknac ekran
+             * po wygasnieciu pauzy (close_done ustawia sie tylko na 0 st). */
+            s_auto_close_done = 0U;
+        }
         switch (q.cmd) {
         case STEPPER_CMD_MOVE_REL:
             stepper_motion_move_rel(&s_motion, q.arg1, q.speed, q.accel);
@@ -415,13 +482,8 @@ void stepper_poll(void)
             stepper_motion_move_abs(&s_motion, q.arg1, q.speed, q.accel);
             break;
         case STEPPER_CMD_STOP:
-            s_done_pending = 0;
-            stepper_motion_stop(&s_motion);
-            stepper_hw_release();
-            /* E-stop: wyczysc zalegle MOVE z ringu, zeby po STOP
-             * silnik nie odpalal starych zadan. */
-            cmd_reset();
-            tx_status();   /* natychmiastowy odzew po STOP */
+            /* Defensywnie — normalnie STOP obsluguje dispatch (poza ringiem). */
+            stepper_stop_now();
             break;
         case STEPPER_CMD_STATUS:
             tx_status();
@@ -462,6 +524,11 @@ void stepper_poll(void)
                 break;
             }
             if (truth_set_span(stepper_motion_pos(&s_motion))) {
+                /* Sesja kalibracji zakonczona (0 i 90 potwierdzone) —
+                 * automat radaru wraca od razu (nowe Guition i tak
+                 * przysle CAL_MODE=false; to belt dla starszego). */
+                s_cal_mode = 0U;
+                s_cal_mode_ms = HAL_GetTick();
                 tx_ref();
                 stepper_motion_move_abs(&s_motion, truth_zero(),
                                         q.speed, q.accel);
@@ -529,6 +596,16 @@ void stepper_poll(void)
             tx_ref();
             break;
         }
+        case STEPPER_CMD_SET_ONOFF: {
+            /* "Plynne wylaczenie" (ekran radaru w Guitionie): bramka dimu
+             * 7-seg przy zjezdzie. Tylko preferencja (bez ruchu);
+             * persist + echo REF (bit4 flags). */
+            truth_set_onoff((uint8_t)(q.arg1 != 0L),
+                            stepper_motion_pos(&s_motion),
+                            stepper_motion_busy(&s_motion));
+            tx_ref();
+            break;
+        }
         case STEPPER_CMD_CAL_MODE:
             /* Kalibracja w toku (Guition): wstrzymaj automat LD2410C.
              * Bez persistencji — tylko RAM; en=0 gasi, brak odswiezen =
@@ -545,18 +622,28 @@ void stepper_poll(void)
     /* 1.5. Automat LD2410C (lokalny, nieblokujacy):
      *  - zbocze OUT -> jedz do wybranego kata (truth_target_deg),
      *  - cisza OUT >= truth_auto_close_s (30s/3m/10m/45m) -> zjazd do 0,
+     *  - close_done dopiero po DOJECHANIU do 0 (STOP/przerwanie zjazdu nie
+     *    zostawia ekranu otwartego na zawsze — warunek zadziala ponownie),
      *  - pauza po komendzie z UI (STEPPER_AUTO_MANUAL_HOLD_MS),
+     *  - wlaczenie radaru (0->1) liczy cisze od nowa i nie gubi osoby,
+     *    ktora stoi przed radarem juz w chwili wlaczania,
      *  - radar_en OFF -> bez akcji. */
     {
-        static uint8_t  s_auto_last_out = 0U;
-        static uint8_t  s_auto_close_done = 0U;
-        static uint8_t  s_auto_open_pending = 0U;
-        static uint32_t s_auto_out_ms = 0U;
-
         const uint32_t now = HAL_GetTick();
         const uint8_t out = radar_out_present() ? 1U : 0U;
+        const uint8_t en = truth_radar_en() ? 1U : 0U;
 
-        if (!truth_radar_en()) {
+        /* Zbocze enable 0->1: reset "zbocza OUT" i licznika ciszy — jesli
+         * ktos stoi, otwarcie ruszy w tej iteracji (albo przez pending po
+         * pauzie manualnej po SET_RADAR). */
+        if (en && !s_auto_en_prev) {
+            s_auto_last_out = 0U;
+            s_auto_close_done = 0U;
+            s_auto_out_ms = now;
+        }
+        s_auto_en_prev = en;
+
+        if (!en) {
             s_auto_close_done = 0U;
             s_auto_open_pending = 0U;
         } else if (truth_calibrated()) {
@@ -576,6 +663,7 @@ void stepper_poll(void)
                                             truth_deg_to_steps(truth_target_deg()),
                                             (uint32_t)truth_home_speed(),
                                             (uint32_t)truth_home_accel());
+                    s_dim_latch = 1U; /* otwarcie radaru: jasnosc rosnie z ruchem */
                 } else if (!cal_hold) {
                     /* Zbocze w oknie pauzy (np. krecenie reczne sprzed
                      * chwili): nie gub go — otworz po wygasnieciu pauzy. */
@@ -592,17 +680,70 @@ void stepper_poll(void)
                                         truth_deg_to_steps(truth_target_deg()),
                                         (uint32_t)truth_home_speed(),
                                         (uint32_t)truth_home_accel());
+                s_dim_latch = 1U; /* otwarcie radaru po oknie pauzy */
             }
-            if (!out && !pause && !s_auto_close_done &&
-                (uint32_t)(now - s_auto_out_ms) >=
-                    ((uint32_t)truth_auto_close_s() * 1000U)) {
-                stepper_motion_move_abs(&s_motion, truth_deg_to_steps(0U),
-                                        (uint32_t)truth_home_speed(),
-                                        (uint32_t)truth_home_accel());
-                s_auto_close_done = 1U;
+            /* Domkniecie (cisza, bez pauzy):
+             *  - stoi na 0 -> stan "zamkniety" (bez jalowego busy/DONE);
+             *  - stoi wyzej i cisza minela -> zjazd do 0 (takze po STOP
+             *    w trakcie poprzedniego zjazdu — close_done tylko na 0). */
+            if (!out && !pause) {
+                const int32_t zsteps = truth_deg_to_steps(0U);
+                if (!stepper_motion_busy(&s_motion) &&
+                    stepper_motion_pos(&s_motion) == zsteps) {
+                    s_auto_close_done = 1U;
+                    s_dim_latch = 1U; /* radar = zamkniete: 2% */
+                } else if (!s_auto_close_done &&
+                           !stepper_motion_busy(&s_motion) &&
+                           stepper_motion_pos(&s_motion) != zsteps &&
+                           (uint32_t)(now - s_auto_out_ms) >=
+                               ((uint32_t)truth_auto_close_s() * 1000U)) {
+                    stepper_motion_move_abs(&s_motion, zsteps,
+                                            (uint32_t)truth_home_speed(),
+                                            (uint32_t)truth_home_accel());
+                    s_dim_latch = 1U; /* zjazd radaru: jasnosc spada z ruchem */
+                }
             }
         }
         s_auto_last_out = out;
+    }
+
+    /* 1.6. "Plynne wylaczenie" (bramka z ekranu RADAR): jasnosc
+     * 7-seg proporcjonalna do FIZYCZNEGO otwarcia ekranu — sama synchronizuje
+     * sie z ruchem (kroki/speed), obsluzyje nawrot w trakcie zamykania i nie
+     * potrzebuje timerow. Zamkniete (0 st) -> 2%, otwarte (target) -> user%.
+     * DZIALA WYLACZNIE dla jazd wywolanych przez radar (s_dim_latch); ruch
+     * z UI / boot-home / kalibracja -> user% (operator ma pelna jasnosc).
+     * Bity NIE sa dotykane, gdy PWM ma juz wartosc docelowa. */
+    {
+        static uint32_t s_dim_ms = 0U;
+        const uint32_t dnow = HAL_GetTick();
+        if ((uint32_t)(dnow - s_dim_ms) >= 20U) {
+            s_dim_ms = dnow;
+            const uint8_t user = brightness_user_percent();
+            uint8_t eff = user;
+            if (truth_onoff() && truth_radar_en() && truth_calibrated() &&
+                s_dim_latch != 0U && user > 2U) {
+                const int32_t tgt = truth_deg_to_steps(truth_target_deg());
+                const uint8_t manual =
+                    ((uint32_t)(dnow - s_last_move_ms) <
+                     STEPPER_AUTO_MANUAL_HOLD_MS);
+                const uint8_t cal_hold =
+                    (s_cal_mode != 0U) &&
+                    ((uint32_t)(dnow - s_cal_mode_ms) <
+                     STEPPER_CAL_MODE_TIMEOUT_MS);
+                if (tgt != 0L && !manual && !cal_hold) {
+                    int32_t open_steps = stepper_motion_pos(&s_motion);
+                    if (open_steps < 0L) open_steps = -open_steps;
+                    const int32_t full = (tgt < 0L) ? -tgt : tgt;
+                    if (open_steps > full) open_steps = full;
+                    eff = (uint8_t)(2 + (((int32_t)user - 2) * open_steps /
+                                         full));
+                }
+            }
+            if (eff != PWM_Reg_LastDuty()) {
+                PWM_Reg_SetDuty(eff);
+            }
+        }
     }
 #endif
 
