@@ -42,6 +42,11 @@ bool ld2410_radar::begin(ld2410_uart_t uart, bool waitForRadar)
 {
     uart_ = uart;
 
+    /* Swiezosc od startu = "brak ramki": bez tego isConnected() zwracalo
+     * true przez pierwsza sekunde po boot (tick-0 < timeout), a init
+     * odpalal sesje config na radarze, ktory jeszcze sie nie wybootowal. */
+    radar_uart_last_packet_ = HAL_GetTick() - radar_uart_timeout;
+
     if (!waitForRadar) {
         return true;
     }

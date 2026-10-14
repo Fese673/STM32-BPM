@@ -64,6 +64,10 @@ static void max_i2c_recover(void)
 {
     GPIO_InitTypeDef gpio = {0};
 
+    /* Obrona: HAL na niezainicjalizowanym hi2c2 (Instance==NULL) pisalby
+     * rejestrami I2C pod adres 0x00000000 (alias wektorow we flashu!). */
+    if (hi2c2.Instance == NULL) return;
+
     __HAL_RCC_GPIOB_CLK_ENABLE();
     gpio.Pin   = GPIO_PIN_10 | GPIO_PIN_11;   /* SCL | SDA */
     gpio.Mode  = GPIO_MODE_OUTPUT_OD;
@@ -90,6 +94,7 @@ static void max_i2c_recover(void)
 
 uint8_t max30102_Detect(void)
 {
+    if (hi2c2.Instance == NULL) return 0;   /* I2C2 nie zainicjalizowane */
     if (HAL_I2C_IsDeviceReady(&hi2c2, MAX30102_ADDR_WRITE, 2, 5) == HAL_OK)
         return 1;
     return 0;
@@ -97,6 +102,7 @@ uint8_t max30102_Detect(void)
 
 void max30102_init(void)
 {
+    if (hi2c2.Instance == NULL) { max30102_zombie = 1; return; }
     if (max30102_zombie) return;
 
     uint8_t data = 0;
@@ -164,7 +170,7 @@ void max30102_init(void)
 
 uint8_t max30102_getUnreadSampleCount(void)
 {
-    if (max30102_zombie) return 0;
+    if (max30102_zombie || hi2c2.Instance == NULL) return 0;
 
     uint8_t wr = 0, rd = 0;
 
@@ -181,7 +187,7 @@ uint8_t max30102_getUnreadSampleCount(void)
 
 void max30102_getFIFO(SAMPLE *data, uint8_t sampleCount)
 {
-    if (max30102_zombie) return;
+    if (max30102_zombie || hi2c2.Instance == NULL) return;
 
     uint8_t dataTemp[5 * 6];
     uint8_t i;
@@ -207,7 +213,7 @@ void max30102_getFIFO(SAMPLE *data, uint8_t sampleCount)
 
 uint8_t max30102_getStatus(void)
 {
-    if (max30102_zombie) return 0;
+    if (max30102_zombie || hi2c2.Instance == NULL) return 0;
 
     uint8_t data = 0, dataTemp = 0;
 
@@ -290,6 +296,10 @@ int16_t eachSampleDiff = 0; // How different is it from the previous sample?
 
 void max30102_cal(void)
 {
+    /* Twarda blokada: bez zainicjalizowanego I2C2 nie ruszamy HAL-a
+     * (kazde HAL_I2C_* na Instance==NULL to UB — patrz v2.2 freeze). */
+    if (hi2c2.Instance == NULL) return;
+
     if (max30102_zombie) {
         /* Re-probe co 2 s: najpierw odbudowa I2C2 (BUSY-lockup), potem
          * jeden IsDeviceReady (do 10 ms), bez wiszenia. Jak czujnik

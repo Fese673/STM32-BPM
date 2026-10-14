@@ -65,6 +65,9 @@ bool uart1_write(const uint8_t *data, uint16_t len)
     if (data == NULL || len == 0U) return true;
 
     bool ok = false;
+    /* Save/restore PRIMASK: nie wlaczamy przerwan na slepo, gdy ktos
+     * wolal uart1_write z zagniezdzonego krytycznego odcinka. */
+    const uint32_t primask = __get_PRIMASK();
     __disable_irq();
     {
         uint16_t copied = 0;
@@ -85,7 +88,9 @@ bool uart1_write(const uint8_t *data, uint16_t len)
         ok = (copied == len);
         uart1_tx_kick();
     }
-    __enable_irq();
+    if (primask == 0U) {
+        __enable_irq();
+    }
     return ok;
 }
 

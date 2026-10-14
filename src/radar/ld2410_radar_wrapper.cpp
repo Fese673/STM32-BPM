@@ -32,6 +32,7 @@ static const uint8_t kSensStat[3][9] = {
 static uint8_t s_sens_code = 0U;        /* aktywny preset (RAM; truth we flash) */
 static uint8_t s_sens_pending = 0xFFU;  /* 0xFF = brak zadania zmiany */
 static uint32_t s_sens_request_ms = 0U;
+static uint8_t s_first_link_done = 0U;  /* jednorazowa konfiguracja po realnym linku */
 
 static uint8_t sens_sanitize(uint8_t code)
 {
@@ -125,6 +126,20 @@ void ld2410_radar_poll(void)
                 if (!got) ++s_radar_frames_bad;
             }
         }
+    }
+
+    /* Jednorazowo po PIERWSZYM realnym polaczeniu: radar na zimnym starcie
+     * bootuje ~1-2 s, wiec konfiguracja z init prawie zawsze chybia.
+     * Dosylamy wtedy engineering mode (energie 9 bramek) i preset czulosci
+     * z truth. ~0.3-1.3 s blokady RAZ — IWDG (~4 s) ma zapas. */
+    if (!s_first_link_done && s_initialised && !s_radar_zombie &&
+        s_radar.isConnected()) {
+        s_first_link_done = 1U;
+        if (!s_radar.engineeringRetrieved()) {
+            (void)s_radar.requestStartEngineeringMode();
+        }
+        (void)s_radar.setGateSensitivityThresholds(kSensMov[s_sens_code],
+                                                   kSensStat[s_sens_code]);
     }
 
     /* Preset czulosci z UI (0x0F): jednorazowa sesja config, gdy radar zywy.

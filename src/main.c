@@ -52,9 +52,11 @@ UART_HandleTypeDef huart1;   // UART1 PA9/PA10 -> ZEGAR ESP32 (ramki COBS, 19200
 UART_HandleTypeDef huart2;   // UART2 PA2/PA3 -> radar LD2410 (256000)
 
 /* USER CODE BEGIN PV */
+#if MAX30102_ENABLE
 //  Flaga wysylania BPM (tylko raz na pik)
 static uint8_t last_diff_state = 0;  // Pamietaj poprzedni stan diff
 static uint8_t last_hr_present = 0;  // 1 = ostatnio BPM > 0 (ramka "brak palca")
+#endif
 
 /* USER CODE END PV */
 
@@ -62,13 +64,18 @@ static uint8_t last_hr_present = 0;  // 1 = ostatnio BPM > 0 (ramka "brak palca"
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+#if OLED_ENABLE
 static void MX_I2C1_Init(void);
+#endif
+#if MAX30102_ENABLE
 static void MX_I2C2_Init(void);
+#endif
 static void MX_NVIC_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
 void MX_USART2_UART_Init(void);
 static void i2c_ctrl_poll(void);
+static void iwdg_start(void);
 
 
 /* USER CODE BEGIN 0 */
@@ -132,19 +139,20 @@ int main(void)
 #else
     oled_zombie     = 1;   /* OLED wylaczony flaga — pelne odciecie */
 #endif
-#if MAX30102_ENABLE
-    max30102_zombie = max30102_Detect() ? 0 : 1;
-#else
-    max30102_zombie = 1;   /* pulsoksymetr wylaczony flaga (fallback) */
-#endif
 
     if (!oled_zombie) {
         OLED_Init();       // ekran (non-blocking IT chain)
     }
 
+#if MAX30102_ENABLE
+    /* MAX30102 (wlaczony flaga): Detect + init na zainicjalizowanym I2C2.
+     * Przy MAX30102_ENABLE=0 modul jest calkowicie odciety — ZADNE funkcje
+     * max30102_* nie sa wolane (hi2c2.Instance == NULL => HAL na NULL-u). */
+    max30102_zombie = max30102_Detect() ? 0 : 1;
     if (!max30102_zombie) {
         max30102_init();   // czujnik tetna
     }
+#endif
 
     // Buzzer: start PWM na TIM3_CH3 (PB0)
     HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
@@ -152,12 +160,19 @@ int main(void)
 
     /* USER CODE END 2 */
 
+    /* Watchdog (IWDG) startuje DOPIERO po init (init ma dlugie
+     * konfiguracje radaru) — od tej chwili ZADNA blokada petli > ~3 s
+     * nie zatrzyma systemu na zawsze: IWDG zrobi reset. */
+    iwdg_start();
+
     /* Superloop. Dioda PC13 miga co 100 ms Z PETLI — jej stanie
      * znaczy, ze petla stoi. Nic innego diody nie rusza. */
     uint32_t last_i2c_ms = 0U;
     uint32_t last_led_ms = 0U;
     while (1)
     {
+        IWDG->KR = 0xAAAAU;          // karmienie watchdoga (co iteracje)
+
         frame_rx_process();          // ramki COBS z ZEGAR (nieblokujace)
 
         if ((HAL_GetTick() - last_led_ms) >= 100U) {
@@ -179,7 +194,13 @@ int main(void)
 }
 
 /* Poll czujnikow co 20 ms (odpowiednik dawnego i2c_ctrl_task).
- * OLED non-blocking: tylko wpisy do cache + watchdog/kick/recover. */
+ * OLED non-blocking: tylko wpisy do cache + watchdog/kick/recover.
+ *
+ * MAX30102: CALY blok pod #if MAX30102_ENABLE. Gdy modul wylaczony,
+ * wolanie max30102_cal() na niezainicjalizowanym hi2c2 (Instance==NULL)
+ * powodowalo HAL-owe zapisy/odczyty rejestrow I2C pod adresem 0x00000000
+ * (alias tablicy wektorow we flashu = UB; w v2.2 konczylo sie HardFault
+ * i petla while(1) w handlerze — dokladnie "wszystko zamarza" po ~2-3 s). */
 static void i2c_ctrl_poll(void)
 {
 #if OLED_ENABLE
@@ -191,6 +212,7 @@ static void i2c_ctrl_poll(void)
     }
 #endif
 
+#if MAX30102_ENABLE
     if (max30102_zombie)
     {
         /* Re-probe zyje w max30102_cal() (recover I2C2 + Detect + init
@@ -288,7 +310,7 @@ static void i2c_ctrl_poll(void)
         }
         last_hr_present = hrPresent;
     }
-
+#endif /* MAX30102_ENABLE */
 }
 
 
@@ -476,6 +498,7 @@ void MX_USART2_UART_Init(void)
 }
 #endif
 
+#if OLED_ENABLE
 static void MX_I2C1_Init(void)
 {
     hi2c1.Instance             = I2C1;                    // Wskazanie dokładne sprzętu na I2C1 (0x40005400)
@@ -494,7 +517,9 @@ static void MX_I2C1_Init(void)
         _Error_Handler(__FILE__, __LINE__); // Jeśli: zegar nie działa, ma złe parametry ,timeout | HAL zwraca HAL_ERROR
     }
 }
+#endif /* OLED_ENABLE */
 
+#if MAX30102_ENABLE
 static void MX_I2C2_Init(void)
 {
     hi2c2.Instance             = I2C2;
@@ -512,6 +537,7 @@ static void MX_I2C2_Init(void)
         _Error_Handler(__FILE__, __LINE__);
     }
 }
+#endif /* MAX30102_ENABLE */
 
 static void MX_GPIO_Init(void) // Konfiguracja wszystkich pinów GPIO
 {
@@ -562,15 +588,56 @@ static void MX_GPIO_Init(void) // Konfiguracja wszystkich pinów GPIO
 
 }
 
+/* IWDG (niezalezny watchdog). LSI ~40 kHz; /64 => 625 Hz;
+ * reload 2500 => ~4 s (min ~2.6 s przy LSI 60 kHz, max ~5.3 s przy 30 kHz).
+ * Najdluzsza legalna blokada petli (sesja config radaru ~1.2 s) ma zapas.
+ * Start DOPIERO przed superloop — init ma dlugie HAL_Delay. */
+static void iwdg_start(void)
+{
+    /* Zamroz IWDG przy zatrzymanym rdzeniu (debugger/ST-Link) —
+     * step-by-step nie wywola resetu. */
+    DBGMCU->CR |= DBGMCU_CR_DBG_IWDG_STOP;
+
+    IWDG->KR  = 0x5555U;   /* odblokuj zapis PR/RLR */
+    IWDG->PR  = 4U;        /* prescaler /64 */
+    IWDG->RLR = 2500U;     /* ~4 s */
+    IWDG->KR  = 0xAAAAU;   /* pierwsze karmienie (przed startem) */
+    IWDG->KR  = 0xCCCCU;   /* start — LSI wlacza sie automatycznie */
+}
+
+/* Awaryjna pulapka (production): mrugnij 3x dioda PC13 i zresetuj MCU.
+ * Wolana z _Error_Handler (bledy init HAL) ORAZ z handlerow HardFault/
+ * MemManage/BusFault/UsageFault (stm32f1xx_it.c). Wczesniej oba miejsca
+ * mialy while(1) = "dioda staje i wszystko zamarza na zawsze".
+ * Dziala na surowych rejestrach — takze przed HAL_Init i przed
+ * konfiguracja GPIO (sama wlacza zegar GPIOC). */
+void Board_FailTrap(void)
+{
+    __disable_irq();
+
+    RCC->APB2ENR |= RCC_APB2ENR_IOPCEN;   /* PC13 (LED) */
+
+    for (uint32_t i = 0U; i < 6U; ++i) {
+        if ((i & 1U) == 0U) {
+            GPIOC->BSRR = GPIO_BSRR_BS13;
+        } else {
+            GPIOC->BSRR = GPIO_BSRR_BR13;
+        }
+        for (volatile uint32_t d = 0U; d < 1200000U; ++d) { __NOP(); }
+    }
+
+    NVIC_SystemReset();
+    for (;;) { }   /* gdyby reset nie zadzialal */
+}
+
 /**
   * @brief  Obsługa błędów
   */
 void _Error_Handler(char *file, int line)
 {
-    while (1)
-    {
-        // Jakis kiedys led diagonstyczny lub inna komenda 
-    }
+    (void)file;
+    (void)line;
+    Board_FailTrap();   /* nigdy nie wisimy tu na zawsze */
 }
 
 #ifdef USE_FULL_ASSERT

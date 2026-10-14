@@ -72,6 +72,9 @@
 #endif
 void _Error_Handler(char *, int);
 
+/* Mrugniecie PC13 3x + NVIC_SystemReset (m.in. z handlerow faultow). */
+void Board_FailTrap(void);
+
 #define Error_Handler() _Error_Handler(__FILE__, __LINE__)
 #ifdef __cplusplus
 }

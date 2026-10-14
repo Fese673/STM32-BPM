@@ -36,6 +36,7 @@
 #include "stm32f1xx_it.h"
 
 /* USER CODE BEGIN 0 */
+#include "main.h"            /* Board_FailTrap (faulty -> blink + reset) */
 #include "max30102/max30102.h"
 #include "comm/uart1.h"
 #include "comm/uart2.h"
@@ -65,18 +66,14 @@ void NMI_Handler(void)
 
 /**
 * @brief This function handles Hard fault interrupt.
+*
+* Production: NIE while(1) (to dawalo objaw "dioda staje, wszystko
+* zamarza"). Sekwencja: 3x mrugniecie PC13 + NVIC_SystemReset —
+* board wraca do zycia, a blyski mowia, ze to byl fault.
 */
 void HardFault_Handler(void)
 {
-  /* USER CODE BEGIN HardFault_IRQn 0 */
-
-  /* USER CODE END HardFault_IRQn 0 */
-  while (1)
-  {
-  }
-  /* USER CODE BEGIN HardFault_IRQn 1 */
-
-  /* USER CODE END HardFault_IRQn 1 */
+  Board_FailTrap();
 }
 
 /**
@@ -84,15 +81,7 @@ void HardFault_Handler(void)
 */
 void MemManage_Handler(void)
 {
-  /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
-  /* USER CODE END MemoryManagement_IRQn 0 */
-  while (1)
-  {
-  }
-  /* USER CODE BEGIN MemoryManagement_IRQn 1 */
-
-  /* USER CODE END MemoryManagement_IRQn 1 */
+  Board_FailTrap();
 }
 
 /**
@@ -100,15 +89,7 @@ void MemManage_Handler(void)
 */
 void BusFault_Handler(void)
 {
-  /* USER CODE BEGIN BusFault_IRQn 0 */
-
-  /* USER CODE END BusFault_IRQn 0 */
-  while (1)
-  {
-  }
-  /* USER CODE BEGIN BusFault_IRQn 1 */
-
-  /* USER CODE END BusFault_IRQn 1 */
+  Board_FailTrap();
 }
 
 /**
@@ -116,15 +97,7 @@ void BusFault_Handler(void)
 */
 void UsageFault_Handler(void)
 {
-  /* USER CODE BEGIN UsageFault_IRQn 0 */
-
-  /* USER CODE END UsageFault_IRQn 0 */
-  while (1)
-  {
-  }
-  /* USER CODE BEGIN UsageFault_IRQn 1 */
-
-  /* USER CODE END UsageFault_IRQn 1 */
+  Board_FailTrap();
 }
 
 /**
