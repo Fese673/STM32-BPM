@@ -438,10 +438,25 @@ uint8_t truth_set_zero(void)
     /* Adopcja: licznik fizycznie zeruje WYWOLUJACY (motion_set_pos 0).
      * Tu tylko uniewazniamy kalibracje do czasu SET_SPAN (stary span
      * nie pasuje do nowej ramy) — zapis od razu, kalibracja jest rzadka. */
+    const int32_t prev_span   = s_span;
+    const uint8_t prev_cal_ok = s_cal_ok;
+
     s_span = 0L;
     s_cal_ok = 0U;
     s_save_armed = 0U;  /* pozycja 0 zapisze sie normalnym cyklem po ruchu */
-    return truth_save_now(0L);
+
+    if (truth_save_now(0L)) {
+        return 1U;
+    }
+
+    /* Zapis nieudany (erase/program/CRC we flash): przywracamy poprzednia
+     * rame, zeby RAM byl SPOJNY z flashem. Bez tego po power cycle wrocilaby
+     * stara kalibracja przy mechanizmie ustawionym na nowe zero — automat
+     * liczylby pozycje/limity w starej skali (cichy dryf). Caller dostaje 0
+     * i tylko liczy odrzucenie (bez zmiany protokolu). */
+    s_span   = prev_span;
+    s_cal_ok = prev_cal_ok;
+    return 0U;
 }
 
 uint8_t truth_set_span(int32_t pos90)

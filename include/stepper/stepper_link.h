@@ -110,6 +110,11 @@ void stepper_init(void);
 /* Bare-metal poll steppera. Wolac co iteracje superloop (nieblokujacy). */
 void stepper_poll(void);
 
+/* 1 gdy silnik wykonuje ruch. Uzywane przez warstwe radaru (sesje config
+ * LD2410 blokuja superloop ~0.3-1.3 s — wolno je robic tylko na postoju,
+ * inaczej kroki staja i ring RX gubi komendy). */
+uint8_t stepper_is_busy(void);
+
 /* Liczniki do debugowania BEZ UART (DEBUG_LOG nie wolno — pisze na UART1
  * i rozsypalby strumien COBS!). Podglad w debuggerze. */
 extern volatile uint32_t g_stepper_rx_cmd;

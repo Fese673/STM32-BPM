@@ -4,6 +4,7 @@
 #include "comm/uart2.h"
 #include "stm32f1xx_hal.h"
 #include "comm/frame_protocol.h"
+#include "stepper/stepper_link.h"  /* stepper_is_busy — sesje config tylko na postoju */
 
 static ld2410_radar s_radar;
 static bool s_initialised = false;
@@ -131,9 +132,11 @@ void ld2410_radar_poll(void)
     /* Jednorazowo po PIERWSZYM realnym polaczeniu: radar na zimnym starcie
      * bootuje ~1-2 s, wiec konfiguracja z init prawie zawsze chybia.
      * Dosylamy wtedy engineering mode (energie 9 bramek) i preset czulosci
-     * z truth. ~0.3-1.3 s blokady RAZ — IWDG (~4 s) ma zapas. */
+     * z truth. ~0.3-1.3 s blokady RAZ — IWDG (~4 s) ma zapas.
+     * Tylko na POSTOJU (stepper_is_busy): blokada zatrzymalaby kroki
+     * i przepelnila ring RX (512 B = ~0.27 s @19200), gubiac komendy. */
     if (!s_first_link_done && s_initialised && !s_radar_zombie &&
-        s_radar.isConnected()) {
+        s_radar.isConnected() && !stepper_is_busy()) {
         s_first_link_done = 1U;
         if (!s_radar.engineeringRetrieved()) {
             (void)s_radar.requestStartEngineeringMode();
@@ -148,7 +151,8 @@ void ld2410_radar_poll(void)
     if (s_sens_pending != 0xFFU) {
         if ((now - s_sens_request_ms) > 30000U) {
             s_sens_pending = 0xFFU;
-        } else if (s_initialised && !s_radar_zombie && s_radar.isConnected()) {
+        } else if (s_initialised && !s_radar_zombie && s_radar.isConnected() &&
+                   !stepper_is_busy()) {
             const uint8_t code = s_sens_pending;
             s_sens_pending = 0xFFU;
             if (s_radar.setGateSensitivityThresholds(kSensMov[code],

@@ -66,6 +66,10 @@ static uint32_t s_last_cmd_ms = 0U;     /* pauza automatu po akcji UI */
 static uint32_t s_last_move_ms = 0U;    /* ostatnia komenda RUCHU (pauza dimu) */
 static uint8_t  s_dim_latch = 0U;       /* 1 = ostatnia jazda z radaru (dim) */
 static uint8_t  s_auto_close_done = 0U; /* ekran fizycznie domkniety (0 st) */
+/* Zbocze OUT w oknie pauzy: otwarcie uzbrojone na pozniej. Na poziomie pliku,
+ * bo STOP (dispatch, poza ringiem) musi je skasowac — inaczej automat ruszal
+ * ~1 s po E-stopie bez nowej komendy (sprzeczne z kontraktem STOPu). */
+static uint8_t  s_auto_open_pending = 0U;
 
 /* DONE jest krytyczne dla apki (czeka na nie sekwencer): jesli ring TX byl
  * pelny w momencie dojazdu, probujemy ponownie przez 1 s zamiast gubic. */
@@ -226,6 +230,7 @@ static void stepper_stop_now(void)
     s_last_move_ms    = HAL_GetTick();
     s_dim_latch       = 0U;
     s_auto_close_done = 0U;
+    s_auto_open_pending = 0U;  /* E-stop kasuje tez uzbrojone otwarcie radaru */
     tx_status();
 }
 
@@ -385,6 +390,20 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
         q.arg1 = (int32_t)payload[1];  /* 0 = OFF, !=0 = ON */
         break;
 
+    case STEPPER_CMD_CAL_MODE:
+        if (len != 2U) {   /* cmd(1) + en(1) */
+            ++g_stepper_rx_bad;
+            (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
+            return;
+        }
+        /* Bez tego case'a kazdy CAL_MODE (Guition wysyla go w trakcie
+         * kalibracji) lecial w default -> NACK i NIGDY nie trafial do
+         * ringu — blokada automatu radaru na czas kalibracji nie dzialala
+         * wcale, a mechanizm mogl ruszyc przy rekach operatora. */
+        q.cmd  = cmd;
+        q.arg1 = (int32_t)payload[1];  /* 0 = OFF, !=0 = ON */
+        break;
+
     default:
         ++g_stepper_rx_bad;
         (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
@@ -400,6 +419,11 @@ static void stepper_cmd_dispatch(uint8_t type, uint8_t seq,
         ++g_stepper_rx_bad;
         (void)frame_tx_ack(0U, STEPPER_FRAME_CMD);
     }
+}
+
+uint8_t stepper_is_busy(void)
+{
+    return stepper_motion_busy(&s_motion) ? 1U : 0U;
 }
 
 void stepper_init(void)
@@ -439,7 +463,6 @@ void stepper_poll(void)
     static uint8_t s_cal_mode = 0U;      /* CAL_MODE z Guitiona (kalibracja) */
     static uint32_t s_cal_mode_ms = 0U;
     static uint8_t  s_auto_last_out = 0U;
-    static uint8_t  s_auto_open_pending = 0U;
     static uint8_t  s_auto_en_prev = 0U;
     static uint32_t s_auto_out_ms = 0U;
     stepper_cmd_t q;
@@ -663,15 +686,17 @@ void stepper_poll(void)
             if (out) s_auto_out_ms = now;
             if (out && !s_auto_last_out) {
                 s_auto_close_done = 0U;
-                if (!pause) {
+                if (!pause && !stepper_motion_busy(&s_motion)) {
                     stepper_motion_move_abs(&s_motion,
                                             truth_deg_to_steps(truth_target_deg()),
                                             (uint32_t)truth_home_speed(),
                                             (uint32_t)truth_home_accel());
                     s_dim_latch = 1U; /* otwarcie radaru: jasnosc rosnie z ruchem */
                 } else if (!cal_hold) {
-                    /* Zbocze w oknie pauzy (np. krecenie reczne sprzed
-                     * chwili): nie gub go — otworz po wygasnieciu pauzy. */
+                    /* Pauza ALBO ruch manualny w toku: nie nadpisujemy
+                     * aktywnego celu (DONE musi nalezec do zleconej
+                     * komendy) — otwarcie uzbrojone, ruszy po zakonczeniu
+                     * ruchu (symetrycznie do auto-close, ktore juz czeka). */
                     s_auto_open_pending = 1U;
                 }
                 /* cal_hold: zbocze ignorowane w calosci (bez pending). */
@@ -679,7 +704,8 @@ void stepper_poll(void)
             if (!out) {
                 s_auto_open_pending = 0U; /* wyszedl zanim pauza minela */
             }
-            if (s_auto_open_pending && out && !pause) {
+            if (s_auto_open_pending && out && !pause &&
+                !stepper_motion_busy(&s_motion)) {
                 s_auto_open_pending = 0U;
                 stepper_motion_move_abs(&s_motion,
                                         truth_deg_to_steps(truth_target_deg()),

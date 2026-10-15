@@ -16,7 +16,10 @@
 /* RX RING BUFFER (ISR -> main loop)                                          */
 /* ========================================================================== */
 
-#define RX_RING_SIZE  128U
+/* 512 B = ~266 ms ruchu @19200 baud. Przy 128 B (66 ms) kazda dluzsza
+ * blokada superloop (sesja config radaru, erase flash) cicho gubila
+ * komendy (overflow bez licznika), a ZEGAR widzial tylko timeouty. */
+#define RX_RING_SIZE  512U
 #define RX_RING_MASK  (RX_RING_SIZE - 1U)
 
 static volatile uint8_t  s_rx_ring[RX_RING_SIZE];
