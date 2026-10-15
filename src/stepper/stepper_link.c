@@ -14,7 +14,8 @@
 #include "stepper/stepper_truth.h"
 #include "comm/frame_protocol.h"
 #include "comm/brightness_handler.h"     /* brightness_user_percent */
-#include "pwm/pwm_reg.h"                 /* PWM_Reg_SetDuty/LastDuty */
+#include "display/seg_blink.h"           /* seg_blink_active (dim vs blink) */
+#include "pwm/pwm_reg.h"                 /* PWM_Reg_SetDuty/SetBase/LastDuty */
 #include "radar/ld2410_radar_wrapper.h"  /* LD2410_ENABLE */
 #include "radar/radar_out.h"
 
@@ -745,7 +746,15 @@ void stepper_poll(void)
                 }
             }
             if (eff != PWM_Reg_LastDuty()) {
-                PWM_Reg_SetDuty(eff);
+                /* Podczas blinku alarmu CCR nalezy do seg_blink — zapisujemy
+                 * sama baze, zeby nie podbijac fazy OFF co 20 ms w ruchu
+                 * (blink podlapie nowa baze przy nastepnej fazie). Bez
+                 * blinku: pelny SetDuty jak dotad. */
+                if (seg_blink_active()) {
+                    PWM_Reg_SetBase(eff);
+                } else {
+                    PWM_Reg_SetDuty(eff);
+                }
             }
         }
     }

@@ -29,17 +29,31 @@ void PWM_Reg_Init(void)
     PWM_Reg_SetDuty(PWM_REG_START_PERCENT);
 }
 
-static uint8_t s_last_pct = 100U; /* FailSafe trzyma pelna jasnosc */
+/* Warstwa PWM ma teraz DWIE wartosci (V3.0, blink alarmu):
+ *  - s_base_pct    = jasnosc ZADANA przez warstwy wyzej (user / dim radaru);
+ *                    to ja porownuje dim layer (PWM_Reg_LastDuty) i zapisuje
+ *                    brightness_handler — semantyka jak dotychczas.
+ *  - s_applied_pct = to, co REALNIE siedzi w CCR. Rozni sie od bazy tylko
+ *                    podczas blinku alarmu (seg_blink nadpisuje faze OFF
+ *                    przez PWM_Reg_Commit). Dzieki rozdzieleniu dim layer
+ *                    nie przepisuje PWM w kolko podczas blinku. */
+static uint8_t s_base_pct = 100U;    /* FailSafe trzyma pelna jasnosc */
+static uint8_t s_applied_pct = 100U;
 
 uint8_t PWM_Reg_LastDuty(void)
 {
-    return s_last_pct;
+    return s_base_pct;
 }
 
-void PWM_Reg_SetDuty(uint8_t percent)
+uint8_t PWM_Reg_LastApplied(void)
+{
+    return s_applied_pct;
+}
+
+void PWM_Reg_Commit(uint8_t percent)
 {
     if (percent > 100) percent = 100;
-    s_last_pct = percent;
+    s_applied_pct = percent;
     /* 7447 ma BLANKING active-low: LOW=ON, HIGH=OFF.
      * PWM 0% = PA6 LOW = segmenty 100% ON (jasno).
      * PWM 100% = PA6 HIGH = segmenty 0% (zgaszone).
@@ -47,9 +61,25 @@ void PWM_Reg_SetDuty(uint8_t percent)
      *
      * Dzielnik = Period+1 (licznik liczy 0..Period), dzieki czemu skraje
      * sa dokladne: user 0% -> CCR=Period+1 = stale HIGH (pelne zgaszenie),
-     * user 100% -> CCR=0 = stale LOW (pelna jasnosc bez szczelin). */
+     * user 100% -> CCR=0 = stale LOW (pelen jasnosci bez szczelin). */
     const uint32_t period = (uint32_t)htim3.Init.Period + 1U;
     const uint8_t  inv    = (uint8_t)(100U - percent);
     __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1,
         (uint16_t)(period * inv / 100U));
+}
+
+void PWM_Reg_SetBase(uint8_t percent)
+{
+    if (percent > 100) percent = 100;
+    s_base_pct = percent;
+    /* Bez commitu: uzywane przez ciagle warstwy (dim radaru) TU, gdzie
+     * wlascicielem CCR jest chwilowo blink alarmu — inaczej kazdy zapis
+     * bazy (co 20 ms w ruchu) podbijalby faze OFF i gasilby pulsowanie. */
+}
+
+void PWM_Reg_SetDuty(uint8_t percent)
+{
+    if (percent > 100) percent = 100;
+    s_base_pct = percent;
+    PWM_Reg_Commit(percent);
 }

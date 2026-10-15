@@ -37,6 +37,7 @@
 #include "radar/radar_out.h"
 #include "pwm/pwm_reg.h"
 #include "comm/brightness_handler.h"
+#include "display/seg_blink.h"
 #include "stepper/stepper_link.h"
 #include "stepper/stepper_truth.h"
 
@@ -125,6 +126,7 @@ int main(void)
     uart1_init();
     frame_protocol_init();
     brightness_handler_init();   // ramka 0xB0 -> PWM_Reg_SetDuty
+    seg_blink_init();            // ramka 0xB5 -> blink jasnosci 7-seg (alarm)
     stepper_init();       // ramka 0xB1 -> ring steppera
     uart1_enable_rx();
 
@@ -190,6 +192,7 @@ int main(void)
         radar_out_poll();            // pin OUT (debounce 50 ms)
 #endif
         stepper_poll();              // silnik (timing kroku z next_us)
+        seg_blink_poll();            // alarm: fase jasnosci 7-seg + TTL (50 Hz)
     }
 }
 

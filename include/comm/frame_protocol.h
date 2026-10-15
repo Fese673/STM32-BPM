@@ -26,6 +26,13 @@
  *                                          b6=GARBAGE (bajty na PA3, brak ramek: zly baud?)
  *                                          wysylka: przy zmianie stanu lub co 250 ms, zawsze gdy LD2410_ENABLE
  *   kStmTypeBrightness  0xB0  ZEGAR→STM32  payload=[value 0..100]
+ *   kStmTypeSegBlink    0xB5  ZEGAR→STM32  payload=[en 0/1] — alarm pulsuje
+ *                                          JASNOSCIA 7-seg (PWM 500 ms między
+ *                                          jasnoscia bazowa a ~2%). Zamiast
+ *                                          blankowania cyfr (wygldalo jak
+ *                                          awaria) cyfry zostaja stabilne.
+ *                                          TTL 5 s bez odswiezenia = auto-OFF
+ *                                          (ZEGAR wysyla heartbeat co 2 s).
  *
  * Maksymalny rozmiar payload: 128B (kMaxPayloadBytes).
  */
@@ -48,6 +55,7 @@ extern "C" {
 #define FRAME_TYPE_ACK         0xA2U
 #define FRAME_TYPE_RADAR       0xA3U
 #define FRAME_TYPE_BRIGHTNESS  0xB0U
+#define FRAME_TYPE_SEG_BLINK   0xB5U
 
 /* Handler wywoływany z main loop po zweryfikowaniu ramki.
  * `payload` wskazuje na wewnętrzny bufor RX, ważny tylko w trakcie handlera. */
