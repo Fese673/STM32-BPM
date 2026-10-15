@@ -540,9 +540,16 @@ void stepper_poll(void)
              * /timeoucie). */
             s_cal_mode = 1U;
             s_cal_mode_ms = HAL_GetTick();
-            stepper_motion_set_pos(&s_motion, 0L);
-            if (truth_set_zero()) tx_ref();
-            else ++g_truth_rejected;
+            /* Licznik zerujemy DOPIERO po UDANYM zapisie: przy porazce flash
+             * truth_set_zero robi rollback ramy (span/calOk), a motion.pos
+             * zostaje stary — RAM i flash calkowicie spojne, bez pol-adopcji
+             * (wczesniej: pos=0 w RAM + stara rama = cichy dryf po power cycle). */
+            if (truth_set_zero()) {
+                stepper_motion_set_pos(&s_motion, 0L);
+                tx_ref();
+            } else {
+                ++g_truth_rejected;
+            }
             break;
         case STEPPER_CMD_SET_SPAN:
             /* Adopcja 90 stopni TYLKO na postoju + zapis od razu
@@ -686,17 +693,25 @@ void stepper_poll(void)
             if (out) s_auto_out_ms = now;
             if (out && !s_auto_last_out) {
                 s_auto_close_done = 0U;
-                if (!pause && !stepper_motion_busy(&s_motion)) {
+                /* Ruch nalezacy do samego automatu (s_dim_latch — dim
+                 * sledzi WYLACZNIE jazdy wywolane przez radar) mozemy
+                 * przerwac w kazdej chwili: wykrycie w trakcie zjazdu
+                 * do 0 musi NATYCHMIAST zawrocic do ustawionego celu,
+                 * a nie dojezdzac do 0. Chronimy tylko ruch spoza radaru
+                 * (manual/UI/boot): tam otwarcie czeka (pending) az ruch
+                 * sie skonczy, zeby DONE nalezalo do zleconej komendy. */
+                const uint8_t manual_busy =
+                    stepper_motion_busy(&s_motion) && (s_dim_latch == 0U);
+                if (!pause && !manual_busy) {
                     stepper_motion_move_abs(&s_motion,
                                             truth_deg_to_steps(truth_target_deg()),
                                             (uint32_t)truth_home_speed(),
                                             (uint32_t)truth_home_accel());
                     s_dim_latch = 1U; /* otwarcie radaru: jasnosc rosnie z ruchem */
                 } else if (!cal_hold) {
-                    /* Pauza ALBO ruch manualny w toku: nie nadpisujemy
-                     * aktywnego celu (DONE musi nalezec do zleconej
-                     * komendy) — otwarcie uzbrojone, ruszy po zakonczeniu
-                     * ruchu (symetrycznie do auto-close, ktore juz czeka). */
+                    /* Pauza ALBO ruch spoza radaru w toku: nie nadpisujemy
+                     * aktywnego celu — otwarcie uzbrojone, ruszy po
+                     * zakonczeniu ruchu (symetrycznie do auto-close). */
                     s_auto_open_pending = 1U;
                 }
                 /* cal_hold: zbocze ignorowane w calosci (bez pending). */

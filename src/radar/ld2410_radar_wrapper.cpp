@@ -149,10 +149,15 @@ void ld2410_radar_poll(void)
      * Brak lacza — zadanie czeka do 30 s (potem przepada; wartosc jest juz
      * w truth i wroci przy nastepnym starcie STM32). */
     if (s_sens_pending != 0xFFU) {
-        if ((now - s_sens_request_ms) > 30000U) {
+        if (stepper_is_busy()) {
+            /* Sesja config tylko na postoju, ale dlugiego ruchu NIE liczymy
+             * do deadline'u: przy ruchu > 30 s zmiana czulosci przepadlaby
+             * cicho — truth (flash + REF/HMI) pokazywalaby nowa wartosc,
+             * a radar gralby na starych progach do restartu STM32. */
+            s_sens_request_ms = now;
+        } else if ((now - s_sens_request_ms) > 30000U) {
             s_sens_pending = 0xFFU;
-        } else if (s_initialised && !s_radar_zombie && s_radar.isConnected() &&
-                   !stepper_is_busy()) {
+        } else if (s_initialised && !s_radar_zombie && s_radar.isConnected()) {
             const uint8_t code = s_sens_pending;
             s_sens_pending = 0xFFU;
             if (s_radar.setGateSensitivityThresholds(kSensMov[code],
